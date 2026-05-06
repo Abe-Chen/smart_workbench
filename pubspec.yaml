@@ -1,0 +1,40 @@
+name: smart_workbench
+description: "Smart workbench with dashboard and schedule module."
+publish_to: 'none'
+version: 0.1.0+1
+
+environment:
+  sdk: ^3.10.4
+
+# Dependencies specify other packages that your package needs in order to work.
+# To automatically upgrade your package dependencies to the latest versions
+# consider running `flutter pub upgrade --major-versions`. Alternatively,
+# dependencies can be manually updated by changing the version numbers below to
+# the latest version available on pub.dev. To see which dependencies have newer
+# versions available, run `flutter pub outdated`.
+dependencies:
+  flutter:
+    sdk: flutter
+  audioplayers: ^6.6.0
+  confetti: ^0.8.0
+  device_info_plus: ^13.1.0
+  flutter_local_notifications: ^19.5.0
+  flutter_riverpod: ^2.6.1
+  flutter_timezone: ^5.0.2
+  go_router: ^14.8.1
+  intl: ^0.20.2
+  lunar: ^1.7.8
+  package_info_plus: ^10.1.0
+  path: ^1.9.1
+  path_provider: ^2.1.5
+  permission_handler: ^12.0.1
+  record: ^6.2.0
+  sqflite: ^2.4.2
+  timezone: ^0.10.1
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+flutter:
+  uses-material-design: true
