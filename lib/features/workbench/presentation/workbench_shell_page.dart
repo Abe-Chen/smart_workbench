@@ -1,33 +1,28 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../app/theme.dart';
 import '../../dashboard/presentation/dashboard_page.dart';
 import '../../home/presentation/home_page.dart';
+import '../application/workbench_tab_provider.dart';
 
-class WorkbenchShellPage extends StatefulWidget {
+class WorkbenchShellPage extends ConsumerWidget {
   const WorkbenchShellPage({super.key});
 
-  @override
-  State<WorkbenchShellPage> createState() => _WorkbenchShellPageState();
-}
-
-class _WorkbenchShellPageState extends State<WorkbenchShellPage> {
-  int _currentIndex = 0;
-
-  late final List<Widget> _pages = <Widget>[
-    const DashboardPage(),
-    const HomePage(),
-    const _PlaceholderPage(
+  static const List<Widget> _pages = <Widget>[
+    DashboardPage(),
+    HomePage(),
+    _PlaceholderPage(
       title: '资讯',
       subtitle: '这里会放行业资讯、公告和重点消息。',
       icon: Icons.fact_check_outlined,
     ),
-    const _PlaceholderPage(
+    _PlaceholderPage(
       title: '备忘录',
       subtitle: '这里会放便签、灵感草稿和快速记录。',
       icon: Icons.sticky_note_2_outlined,
     ),
-    const _PlaceholderPage(
+    _PlaceholderPage(
       title: '我的',
       subtitle: '这里会放个人信息、偏好设置和账号相关内容。',
       icon: Icons.person_outline_rounded,
@@ -35,11 +30,15 @@ class _WorkbenchShellPageState extends State<WorkbenchShellPage> {
   ];
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
+    final int currentIndex = ref.watch(workbenchTabIndexProvider);
+    void setIndex(int value) =>
+        ref.read(workbenchTabIndexProvider.notifier).state = value;
+
     return Scaffold(
       extendBody: true,
       backgroundColor: const Color(0xFFF6F9FF),
-      body: IndexedStack(index: _currentIndex, children: _pages),
+      body: IndexedStack(index: currentIndex, children: _pages),
       bottomNavigationBar: SafeArea(
         minimum: const EdgeInsets.fromLTRB(18, 0, 18, 10),
         child: SizedBox(
@@ -74,9 +73,8 @@ class _WorkbenchShellPageState extends State<WorkbenchShellPage> {
                             return Expanded(
                               child: _NavButton(
                                 item: _navItems[index],
-                                selected: _currentIndex == index,
-                                onTap: () =>
-                                    setState(() => _currentIndex = index),
+                                selected: currentIndex == index,
+                                onTap: () => setIndex(index),
                               ),
                             );
                           }),
@@ -90,9 +88,8 @@ class _WorkbenchShellPageState extends State<WorkbenchShellPage> {
                             return Expanded(
                               child: _NavButton(
                                 item: _navItems[index],
-                                selected: _currentIndex == index,
-                                onTap: () =>
-                                    setState(() => _currentIndex = index),
+                                selected: currentIndex == index,
+                                onTap: () => setIndex(index),
                               ),
                             );
                           }),

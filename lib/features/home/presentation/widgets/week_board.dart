@@ -4,6 +4,7 @@ import 'package:go_router/go_router.dart';
 
 import '../../../../app/theme.dart';
 import '../../../../core/models/task_preview.dart';
+import '../../../../core/time/now_provider.dart';
 import '../../../../core/utils/calendar_utils.dart';
 import '../../../task/application/task_providers.dart';
 import '../../application/home_view_mode.dart';
@@ -150,14 +151,17 @@ class _WeekColumns extends StatelessWidget {
   }
 }
 
-class _WeekTaskCard extends StatelessWidget {
+class _WeekTaskCard extends ConsumerWidget {
   const _WeekTaskCard({required this.task, required this.onTap});
 
   final TaskPreview task;
   final VoidCallback onTap;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
+    final DateTime now =
+        ref.watch(nowProvider).valueOrNull ?? DateTime.now();
+    final bool overdue = task.isOverdueAt(now);
     return Material(
       color: Colors.transparent,
       child: InkWell(
@@ -170,7 +174,7 @@ class _WeekTaskCard extends StatelessWidget {
                 : Colors.white,
             borderRadius: BorderRadius.circular(18),
             border: Border.all(
-              color: task.state == TaskVisualState.overdue
+              color: overdue
                   ? const Color(0xFFF5C7B1)
                   : ScheduleBoardPalette.boardBorder,
             ),
@@ -225,7 +229,7 @@ class _WeekTaskCard extends StatelessWidget {
                             overflow: TextOverflow.ellipsis,
                             style: Theme.of(context).textTheme.bodyMedium
                                 ?.copyWith(
-                                  color: task.state == TaskVisualState.overdue
+                                  color: overdue
                                       ? const Color(0xFFB44C22)
                                       : ScheduleBoardPalette.mutedText,
                                 ),

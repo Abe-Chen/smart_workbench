@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../../app/theme.dart';
 import '../../../../core/models/task_preview.dart';
+import '../../../../core/time/now_provider.dart';
 import '../../../../core/voice/voice_player_service.dart';
 import '../../../../core/voice/voice_providers.dart';
 
@@ -21,25 +22,30 @@ class TaskTileCard extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final ColorScheme colorScheme = Theme.of(context).colorScheme;
+    final DateTime now =
+        ref.watch(nowProvider).valueOrNull ?? DateTime.now();
+    final bool overdue = task.isOverdueAt(now);
 
-    final ({Color background, Color border, Color text}) palette =
-        switch (task.state) {
-          TaskVisualState.active => (
-            background: Colors.white,
-            border: ScheduleBoardPalette.boardBorder,
-            text: colorScheme.onSurface,
-          ),
-          TaskVisualState.completed => (
-            background: const Color(0xFFF3F4F6),
-            border: const Color(0xFFD9DCDD),
-            text: const Color(0xFF58606B),
-          ),
-          TaskVisualState.overdue => (
-            background: const Color(0xFFFFF5F0),
-            border: const Color(0xFFF5C7B1),
-            text: colorScheme.onSurface,
-          ),
-        };
+    final ({Color background, Color border, Color text}) palette;
+    if (task.state == TaskVisualState.completed) {
+      palette = (
+        background: const Color(0xFFF3F4F6),
+        border: const Color(0xFFD9DCDD),
+        text: const Color(0xFF58606B),
+      );
+    } else if (overdue) {
+      palette = (
+        background: const Color(0xFFFFF5F0),
+        border: const Color(0xFFF5C7B1),
+        text: colorScheme.onSurface,
+      );
+    } else {
+      palette = (
+        background: Colors.white,
+        border: ScheduleBoardPalette.boardBorder,
+        text: colorScheme.onSurface,
+      );
+    }
 
     return DecoratedBox(
       decoration: BoxDecoration(
@@ -88,7 +94,7 @@ class TaskTileCard extends ConsumerWidget {
                           overflow: TextOverflow.ellipsis,
                           style: Theme.of(context).textTheme.titleMedium
                               ?.copyWith(
-                                color: task.state == TaskVisualState.overdue
+                                color: overdue
                                     ? const Color(0xFFB44C22)
                                     : ScheduleBoardPalette.mutedText,
                               ),
