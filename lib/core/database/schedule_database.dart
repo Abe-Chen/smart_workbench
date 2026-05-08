@@ -21,7 +21,7 @@ class ScheduleDatabase {
 
     return openDatabase(
       databasePath,
-      version: 1,
+      version: 3,
       onConfigure: (Database db) async {
         await db.execute('PRAGMA foreign_keys = ON;');
       },
@@ -63,6 +63,9 @@ class ScheduleDatabase {
             show_completed INTEGER NOT NULL DEFAULT 1,
             show_lunar INTEGER NOT NULL DEFAULT 1,
             locale_code TEXT NOT NULL DEFAULT 'zh-CN',
+            tts_voice TEXT NOT NULL DEFAULT 'x6_lingxiaoxuan_pro',
+            tts_playback_mode TEXT NOT NULL DEFAULT 'auto',
+            tts_speed REAL NOT NULL DEFAULT 1.0,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
           )
@@ -75,6 +78,9 @@ class ScheduleDatabase {
           'show_completed': 1,
           'show_lunar': 1,
           'locale_code': 'zh-CN',
+          'tts_voice': 'x6_lingxiaoxuan_pro',
+          'tts_playback_mode': 'auto',
+          'tts_speed': 1.0,
           'created_at': now,
           'updated_at': now,
         });
@@ -82,6 +88,21 @@ class ScheduleDatabase {
         await db.execute(
           'CREATE INDEX idx_tasks_active_date ON tasks(start_date, status, deleted_at)',
         );
+      },
+      onUpgrade: (Database db, int oldVersion, int newVersion) async {
+        if (oldVersion < 2) {
+          await db.execute(
+            "ALTER TABLE app_settings ADD COLUMN tts_voice TEXT NOT NULL DEFAULT 'x6_lingxiaoxuan_pro'",
+          );
+        }
+        if (oldVersion < 3) {
+          await db.execute(
+            "ALTER TABLE app_settings ADD COLUMN tts_playback_mode TEXT NOT NULL DEFAULT 'auto'",
+          );
+          await db.execute(
+            'ALTER TABLE app_settings ADD COLUMN tts_speed REAL NOT NULL DEFAULT 1.0',
+          );
+        }
       },
     );
   }

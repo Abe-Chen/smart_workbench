@@ -1,0 +1,200 @@
+import 'dart:async';
+import 'dart:convert';
+
+import 'package:dio/dio.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+
+import '../../../core/config/env_config.dart';
+import 'ark_network_probe.dart';
+import '../domain/assistant_message.dart';
+import '../domain/tool_call.dart';
+
+const String _arkBaseUrl = 'https://$kArkHost/api/v3';
+
+class DoubaoChatException implements Exception {
+  DoubaoChatException(this.message);
+  final String message;
+  @override
+  String toString() => 'DoubaoChatException: $message';
+}
+
+/// 流式事件：每个 token 一个 [ChatTokenEvent]，每轮结束（无论有无 tool_calls）
+/// 一个 [ChatRoundCompleteEvent]。controller 据此决定是否进入下一轮 function call。
+sealed class ChatStreamEvent {}
+
+class ChatTokenEvent extends ChatStreamEvent {
+  ChatTokenEvent(this.token);
+  final String token;
+}
+
+class ChatRoundCompleteEvent extends ChatStreamEvent {
+  ChatRoundCompleteEvent({
+    required this.content,
+    required this.toolCalls,
+    required this.finishReason,
+  });
+
+  /// 本轮累计的 assistant 文本（流式拼好的完整内容）。
+  final String content;
+
+  /// 本轮模型请求调用的工具列表（空表示纯文本回答）。
+  final List<ToolCall> toolCalls;
+
+  final String finishReason;
+
+  bool get hasToolCalls => toolCalls.isNotEmpty;
+}
+
+class DoubaoChatClient {
+  DoubaoChatClient({required EnvConfig env, Dio? dio, ArkNetworkProbe? probe})
+    : _env = env,
+      _probe = probe ?? ArkNetworkProbe(),
+      _dio =
+          dio ?? Dio(BaseOptions(connectTimeout: const Duration(seconds: 10)));
+
+  final EnvConfig _env;
+  final ArkNetworkProbe _probe;
+  final Dio _dio;
+
+  Stream<ChatStreamEvent> streamCompletion({
+    required List<AssistantMessage> messages,
+    String? userId,
+    List<Map<String, dynamic>>? tools,
+    double temperature = 0.7,
+  }) async* {
+    if (!_env.hasDoubaoCredentials) {
+      throw DoubaoChatException(
+        '豆包凭据未配置：检查 .env 中 VOLC_ARK_API_KEY / DOUBAO_ENDPOINT_ID',
+      );
+    }
+
+    try {
+      await _probe.ensureReachable();
+    } on ArkNetworkUnavailableException {
+      throw DoubaoChatException('当前网络不可用，请检查网络后重试');
+    }
+
+    final Map<String, dynamic> body = <String, dynamic>{
+      'model': _env.doubaoEndpointId,
+      'stream': true,
+      'temperature': temperature,
+      if (userId != null && userId.isNotEmpty) 'user': userId,
+      'messages': messages.map((AssistantMessage m) => m.toApiJson()).toList(),
+    };
+    if (tools != null && tools.isNotEmpty) {
+      body['tools'] = tools;
+    }
+
+    final Response<ResponseBody> response = await _dio.post<ResponseBody>(
+      '$_arkBaseUrl/chat/completions',
+      options: Options(
+        responseType: ResponseType.stream,
+        headers: <String, String>{
+          'Authorization': 'Bearer ${_env.volcArkApiKey}',
+          'Content-Type': 'application/json',
+          'Accept': 'text/event-stream',
+        },
+      ),
+      data: body,
+    );
+
+    final ResponseBody? respBody = response.data;
+    if (respBody == null) {
+      throw DoubaoChatException('空响应');
+    }
+
+    final Stream<String> lines = respBody.stream
+        .map<List<int>>((List<int> bytes) => bytes)
+        .transform<String>(utf8.decoder)
+        .transform<String>(const LineSplitter());
+
+    final StringBuffer contentBuffer = StringBuffer();
+    final Map<int, _ToolCallBuilder> toolBuilders = <int, _ToolCallBuilder>{};
+    String finishReason = 'stop';
+
+    await for (final String rawLine in lines) {
+      final String line = rawLine.trim();
+      if (line.isEmpty) continue;
+      if (!line.startsWith('data:')) continue;
+
+      final String payload = line.substring(5).trim();
+      if (payload == '[DONE]') break;
+
+      Map<String, dynamic>? json;
+      try {
+        json = jsonDecode(payload) as Map<String, dynamic>;
+      } catch (_) {
+        continue;
+      }
+
+      final List<dynamic>? choices = json['choices'] as List<dynamic>?;
+      if (choices == null || choices.isEmpty) continue;
+      final Map<String, dynamic> first = choices.first as Map<String, dynamic>;
+      final Map<String, dynamic>? delta =
+          first['delta'] as Map<String, dynamic>?;
+      final String? finish = first['finish_reason'] as String?;
+
+      if (delta != null) {
+        final String? deltaContent = delta['content'] as String?;
+        if (deltaContent != null && deltaContent.isNotEmpty) {
+          contentBuffer.write(deltaContent);
+          yield ChatTokenEvent(deltaContent);
+        }
+        final List<dynamic>? toolDeltas = delta['tool_calls'] as List<dynamic>?;
+        if (toolDeltas != null) {
+          for (final dynamic raw in toolDeltas) {
+            if (raw is! Map<String, dynamic>) continue;
+            final int index = (raw['index'] as int?) ?? 0;
+            final _ToolCallBuilder b = toolBuilders.putIfAbsent(
+              index,
+              _ToolCallBuilder.new,
+            );
+            final String? id = raw['id'] as String?;
+            if (id != null) b.id = id;
+            final Map<String, dynamic>? fn =
+                raw['function'] as Map<String, dynamic>?;
+            if (fn != null) {
+              final String? n = fn['name'] as String?;
+              if (n != null) b.name = n;
+              final String? a = fn['arguments'] as String?;
+              if (a != null) b.arguments.write(a);
+            }
+          }
+        }
+      }
+
+      if (finish != null) {
+        finishReason = finish;
+      }
+    }
+
+    final List<ToolCall> toolCalls = toolBuilders.values
+        .where((_ToolCallBuilder b) => b.isValid)
+        .map((_ToolCallBuilder b) => b.build())
+        .toList();
+
+    yield ChatRoundCompleteEvent(
+      content: contentBuffer.toString(),
+      toolCalls: toolCalls,
+      finishReason: finishReason,
+    );
+  }
+}
+
+class _ToolCallBuilder {
+  String? id;
+  String? name;
+  final StringBuffer arguments = StringBuffer();
+
+  bool get isValid => id != null && name != null;
+
+  ToolCall build() =>
+      ToolCall(id: id!, name: name!, argumentsJson: arguments.toString());
+}
+
+final Provider<DoubaoChatClient> doubaoChatClientProvider =
+    Provider<DoubaoChatClient>((Ref ref) {
+      final EnvConfig env = ref.watch(envConfigProvider);
+      final ArkNetworkProbe probe = ref.watch(arkNetworkProbeProvider);
+      return DoubaoChatClient(env: env, probe: probe);
+    });

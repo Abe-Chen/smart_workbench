@@ -11,13 +11,14 @@ import '../../task/application/task_providers.dart';
 import '../../workbench/application/workbench_tab_provider.dart';
 import 'dashboard_metrics.dart';
 
+const double _kDashboardBottomDockGap = 77;
+
 class DashboardPage extends ConsumerWidget {
   const DashboardPage({super.key});
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final DateTime now =
-        ref.watch(nowProvider).valueOrNull ?? DateTime.now();
+    final DateTime now = ref.watch(nowProvider).valueOrNull ?? DateTime.now();
     final DateTime today = normalizeDate(now);
     final DateTime tomorrow = today.add(const Duration(days: 1));
     final AsyncValue<List<TaskPreview>> todayTasksAsync = ref.watch(
@@ -62,7 +63,7 @@ class DashboardPage extends ConsumerWidget {
                   metrics.outerPadding,
                   metrics.outerVerticalPadding,
                   metrics.outerPadding,
-                  metrics.outerVerticalPadding - 2,
+                  metrics.outerVerticalPadding + _kDashboardBottomDockGap,
                 ),
                 child: Column(
                   children: <Widget>[
@@ -263,7 +264,9 @@ class _TodayTomorrowBoard extends StatelessWidget {
                 height: iconSize,
                 decoration: BoxDecoration(
                   color: const Color(0xFFEAF2FF),
-                  borderRadius: BorderRadius.circular(metrics.isCompact ? 10 : 12),
+                  borderRadius: BorderRadius.circular(
+                    metrics.isCompact ? 10 : 12,
+                  ),
                 ),
                 child: Icon(
                   Icons.calendar_month_rounded,
@@ -373,11 +376,7 @@ class _SchedulePreviewColumn extends StatelessWidget {
               if (tasks.isEmpty) {
                 return _EmptyCard(message: '${formatMonthDayLabel(date)}暂无日程');
               }
-              return _TimelineList(
-                tasks: tasks,
-                now: now,
-                metrics: metrics,
-              );
+              return _TimelineList(tasks: tasks, now: now, metrics: metrics);
             },
             loading: () => _ScheduleLoadingPlaceholder(metrics: metrics),
             error: (_, _) => const _EmptyCard(message: '日程加载失败'),
@@ -983,11 +982,15 @@ class _NextTaskContent extends StatelessWidget {
                             child: OutlinedButton(
                               onPressed: () => context.push('/task/${task.id}'),
                               style: OutlinedButton.styleFrom(
-                                side: const BorderSide(color: Color(0xFFD8E4FF)),
+                                side: const BorderSide(
+                                  color: Color(0xFFD8E4FF),
+                                ),
                                 shape: RoundedRectangleBorder(
                                   borderRadius: BorderRadius.circular(14),
                                 ),
-                                padding: const EdgeInsets.symmetric(vertical: 10),
+                                padding: const EdgeInsets.symmetric(
+                                  vertical: 10,
+                                ),
                               ),
                               child: const Text(
                                 '查看详情',
@@ -1249,12 +1252,11 @@ class _WeatherPreviewCard extends StatelessWidget {
                         '°C 多云',
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
-                        style: Theme.of(context).textTheme.bodyMedium
-                            ?.copyWith(
-                              fontWeight: FontWeight.w700,
-                              color: const Color(0xFF50637E),
-                              fontSize: metrics.weatherSummaryFontSize,
-                            ),
+                        style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                          fontWeight: FontWeight.w700,
+                          color: const Color(0xFF50637E),
+                          fontSize: metrics.weatherSummaryFontSize,
+                        ),
                       ),
                       const Spacer(),
                       _WeatherMetaChip(
@@ -1516,7 +1518,11 @@ class _WeatherHourTile extends StatelessWidget {
           ),
         ),
         SizedBox(height: metrics.isCompact ? 4 : 6),
-        Icon(hour.icon, color: Colors.orange, size: metrics.isCompact ? 16 : 20),
+        Icon(
+          hour.icon,
+          color: Colors.orange,
+          size: metrics.isCompact ? 16 : 20,
+        ),
         SizedBox(height: metrics.isCompact ? 4 : 6),
         Text(
           hour.temp,

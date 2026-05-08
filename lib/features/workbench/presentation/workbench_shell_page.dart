@@ -2,6 +2,10 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../app/theme.dart';
+import '../../assistant/application/assistant_controller.dart';
+import '../../assistant/application/assistant_state.dart';
+import '../../assistant/presentation/assistant_drawer.dart';
+import '../../assistant/presentation/widgets/assistant_ball.dart';
 import '../../dashboard/presentation/dashboard_page.dart';
 import '../../home/presentation/home_page.dart';
 import '../application/workbench_tab_provider.dart';
@@ -36,9 +40,19 @@ class WorkbenchShellPage extends ConsumerWidget {
         ref.read(workbenchTabIndexProvider.notifier).state = value;
 
     return Scaffold(
+      resizeToAvoidBottomInset: false,
       extendBody: true,
       backgroundColor: const Color(0xFFF6F9FF),
-      body: IndexedStack(index: currentIndex, children: _pages),
+      body: Stack(
+        children: <Widget>[
+          MediaQuery.removeViewInsets(
+            context: context,
+            removeBottom: true,
+            child: IndexedStack(index: currentIndex, children: _pages),
+          ),
+          const AssistantOverlay(),
+        ],
+      ),
       bottomNavigationBar: SafeArea(
         minimum: const EdgeInsets.fromLTRB(18, 0, 18, 10),
         child: SizedBox(
@@ -99,13 +113,7 @@ class WorkbenchShellPage extends ConsumerWidget {
                   ),
                 ),
               ),
-              _AssistantDock(
-                onTap: () {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('AI 助手入口先预留，下一轮接功能。')),
-                  );
-                },
-              ),
+              const _AssistantDock(),
             ],
           ),
         ),
@@ -160,51 +168,50 @@ class _NavButton extends StatelessWidget {
   }
 }
 
-class _AssistantDock extends StatelessWidget {
-  const _AssistantDock({required this.onTap});
-
-  final VoidCallback onTap;
+class _AssistantDock extends ConsumerWidget {
+  const _AssistantDock();
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
+    final AssistantUiState assistantState = ref.watch(
+      assistantControllerProvider,
+    );
+    final AssistantStage stage = assistantState.stage;
+    final double countdownProgress = assistantState.followUpRemainingMs <= 0
+        ? 0
+        : (assistantState.followUpRemainingMs / 5000).clamp(0, 1);
     return GestureDetector(
-      onTap: onTap,
-      child: Container(
+      onTap: () {
+        final AssistantController controller = ref.read(
+          assistantControllerProvider.notifier,
+        );
+        if (assistantState.drawerOpen) {
+          controller.closeDrawer();
+        } else {
+          controller.startListening(
+            source: AssistantEntrySource.drawerVoice,
+            mode: AssistantListeningMode.openMic,
+          );
+        }
+      },
+      onLongPressStart: (_) => ref
+          .read(assistantControllerProvider.notifier)
+          .startListening(
+            source: AssistantEntrySource.quickVoice,
+            openDrawer: false,
+            mode: AssistantListeningMode.pressToTalk,
+          ),
+      onLongPressEnd: (_) =>
+          ref.read(assistantControllerProvider.notifier).stopListening(),
+      onLongPressCancel: () =>
+          ref.read(assistantControllerProvider.notifier).cancelListening(),
+      child: SizedBox(
         width: 68,
         height: 68,
-        decoration: BoxDecoration(
-          shape: BoxShape.circle,
-          border: Border.all(color: Colors.white, width: 5),
-          gradient: const LinearGradient(
-            colors: <Color>[Color(0xFF69C3FF), Color(0xFF545DFF)],
-            begin: Alignment.topLeft,
-            end: Alignment.bottomRight,
-          ),
-          boxShadow: const <BoxShadow>[
-            BoxShadow(
-              color: Color(0x334A5DFF),
-              blurRadius: 20,
-              offset: Offset(0, 8),
-            ),
-          ],
-        ),
-        child: Stack(
-          alignment: Alignment.center,
-          children: <Widget>[
-            Container(
-              width: 50,
-              height: 50,
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                color: Colors.white.withValues(alpha: 0.16),
-              ),
-            ),
-            const Icon(
-              Icons.auto_awesome_rounded,
-              color: Colors.white,
-              size: 28,
-            ),
-          ],
+        child: AssistantBall(
+          stage: stage,
+          size: 68,
+          countdownProgress: countdownProgress,
         ),
       ),
     );
