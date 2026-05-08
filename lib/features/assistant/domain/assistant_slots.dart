@@ -165,7 +165,10 @@ String? _extractReminderContent(String text) {
 String _trimTrailingParticles(String raw) {
   String s = raw;
   while (s.isNotEmpty &&
-      (s.endsWith('的') || s.endsWith('了') || s.endsWith('，') || s.endsWith('。'))) {
+      (s.endsWith('的') ||
+          s.endsWith('了') ||
+          s.endsWith('，') ||
+          s.endsWith('。'))) {
     s = s.substring(0, s.length - 1);
   }
   return s.trim();
@@ -173,13 +176,13 @@ String _trimTrailingParticles(String raw) {
 
 // 时分：14:00 / 14：30 / 8 点 / 下午 3 点半
 final RegExp _clockPattern = RegExp(
-  r'(?:(?:凌晨|早上|上午|中午|下午|晚上|今晚|明早)\s*)?'
+  r'(?:(?:凌晨|早晨|早上|上午|中午|下午|晚上|今晚|明早)\s*)?'
   r'(?:\d{1,2}[:：]\d{1,2}|\d{1,2}\s*点(?:\s*\d{1,2}\s*分)?(?:半)?)',
 );
 
 // 时段词：今天上午 / 明天下午
 final RegExp _timePhasePattern = RegExp(
-  r'(?:今天|明天|后天|大后天|今晚|明早)?\s*(?:凌晨|早上|上午|中午|下午|晚上)',
+  r'(?:今天|明天|后天|大后天|今晚|明早)?\s*(?:凌晨|早晨|早上|上午|中午|下午|晚上)',
 );
 
 // 相对日期：今天 / 明天 / 后天 / 大后天
@@ -210,9 +213,7 @@ final RegExp _destinationPattern = RegExp(
 );
 
 // 附近搜索锚点："陆家嘴附近 / 浦东周边"
-final RegExp _nearbyPattern = RegExp(
-  r'([一-龥A-Za-z]{2,12}?)\s*(?:附近|周边|周围|一带)',
-);
+final RegExp _nearbyPattern = RegExp(r'([一-龥A-Za-z]{2,12}?)\s*(?:附近|周边|周围|一带)');
 
 // 简单品类词典（命中即返回）
 const List<String> _categoryKeywords = <String>[

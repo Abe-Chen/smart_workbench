@@ -1,6 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:smart_workbench/features/assistant/application/assistant_request_router.dart';
+import 'package:smart_workbench/features/assistant/domain/assistant_execution_mode.dart';
 import 'package:smart_workbench/features/assistant/domain/assistant_intent.dart';
 import 'package:smart_workbench/features/assistant/domain/assistant_slots.dart';
 
@@ -28,15 +29,18 @@ void main() {
       );
       expect(plan.route, AssistantRequestRoute.publicResponses);
       expect(plan.continuePublicContext, false);
+      expect(plan.mode, AssistantExecutionMode.publicQuick);
     });
 
     test('公网话题延续 + 有上下文 → continuePublicContext=true', () {
       final AssistantRequestPlan plan = AssistantRequestRouter.planFor(
         text: '那北京呢',
         hasPublicContext: true,
+        lastPublicMode: AssistantExecutionMode.publicRealtime,
       );
       expect(plan.route, AssistantRequestRoute.publicResponses);
       expect(plan.continuePublicContext, true);
+      expect(plan.mode, AssistantExecutionMode.publicRealtime);
     });
 
     test('公网话题延续 + 无上下文 → continuePublicContext=false', () {
@@ -54,6 +58,7 @@ void main() {
         hasPublicContext: false,
       );
       expect(plan.route, AssistantRequestRoute.publicResponses);
+      expect(plan.mode, AssistantExecutionMode.publicRealtime);
     });
 
     test('本地 UI 关键词 "打开抽屉" → localTools', () {
@@ -140,6 +145,81 @@ void main() {
       expect(plan.intent, AssistantIntent.scheduleWrite);
     });
 
+    test('带完整时间和标题的日程写入 → localTools', () {
+      final AssistantRequestPlan plan = AssistantRequestRouter.planFor(
+        text: '创建一个明天下午 3 点需求讨论会的日程',
+        hasPublicContext: false,
+      );
+      expect(plan.route, AssistantRequestRoute.localTools);
+      expect(plan.intent, AssistantIntent.scheduleWrite);
+      expect(plan.slots.date, '明天');
+      expect(plan.slots.time, contains('3'));
+    });
+
+    test('出差类明确时间表达 → scheduleWrite，而不是只当行程规划', () {
+      final AssistantRequestPlan plan = AssistantRequestRouter.planFor(
+        text: '明天早晨 9 点出差去石家庄。',
+        hasPublicContext: false,
+      );
+      expect(plan.route, AssistantRequestRoute.localTools);
+      expect(plan.intent, AssistantIntent.scheduleWrite);
+      expect(plan.slots.date, '明天');
+      expect(plan.slots.time, contains('9'));
+    });
+
+    test('客户交流类明确时间表达 → scheduleWrite', () {
+      final AssistantRequestPlan plan = AssistantRequestRouter.planFor(
+        text: '明天上午 9 点和客户交流产品对接的问题在客户现场。',
+        hasPublicContext: false,
+      );
+      expect(plan.route, AssistantRequestRoute.localTools);
+      expect(plan.intent, AssistantIntent.scheduleWrite);
+    });
+
+    test('常见自然日程表达 → scheduleWrite', () {
+      const List<String> inputs = <String>[
+        '明天9点去客户现场沟通',
+        '后天上午10点到公司培训',
+        '周五下午2点跟张总电话',
+      ];
+
+      for (final String input in inputs) {
+        final AssistantRequestPlan plan = AssistantRequestRouter.planFor(
+          text: input,
+          hasPublicContext: false,
+        );
+        expect(plan.route, AssistantRequestRoute.localTools, reason: input);
+        expect(plan.intent, AssistantIntent.scheduleWrite, reason: input);
+      }
+    });
+
+    test('明确天气问题仍然走 realtimeInfo', () {
+      final AssistantRequestPlan plan = AssistantRequestRouter.planFor(
+        text: '明天早晨 9 点石家庄天气怎么样',
+        hasPublicContext: false,
+      );
+      expect(plan.route, AssistantRequestRoute.publicResponses);
+      expect(plan.intent, AssistantIntent.realtimeInfo);
+    });
+
+    test('没有具体时间的出差安排不直接创建日程', () {
+      final AssistantRequestPlan plan = AssistantRequestRouter.planFor(
+        text: '明天去石家庄出差',
+        hasPublicContext: false,
+      );
+      expect(plan.route, AssistantRequestRoute.publicResponses);
+      expect(plan.intent, AssistantIntent.tripPlanning);
+    });
+
+    test('自然完成表达 → localTools', () {
+      final AssistantRequestPlan plan = AssistantRequestRouter.planFor(
+        text: '把写周报标记完成',
+        hasPublicContext: false,
+      );
+      expect(plan.route, AssistantRequestRoute.localTools);
+      expect(plan.intent, AssistantIntent.scheduleWrite);
+    });
+
     test('提醒写入 → reminderWrite', () {
       final AssistantRequestPlan plan = AssistantRequestRouter.planFor(
         text: '提醒我喝水',
@@ -180,6 +260,58 @@ void main() {
       // 兜底 generalQa，但 follow up 标识独立保留
       expect(plan.intent, AssistantIntent.generalQa);
       expect(plan.continuePublicContext, true);
+    });
+  });
+
+  group('AssistantRequestRouter · 模式分流', () {
+    test('天气 / 汇率 / 新闻等实时问题 → publicRealtime', () {
+      final AssistantRequestPlan plan = AssistantRequestRouter.planFor(
+        text: '今天美元汇率多少',
+        hasPublicContext: false,
+      );
+      expect(plan.mode, AssistantExecutionMode.publicRealtime);
+    });
+
+    test('附近搜索 → publicRealtime', () {
+      final AssistantRequestPlan plan = AssistantRequestRouter.planFor(
+        text: '徐家汇附近有什么酒店',
+        hasPublicContext: false,
+      );
+      expect(plan.mode, AssistantExecutionMode.publicRealtime);
+    });
+
+    test('路线 / 酒店类 tripPlanning → publicRealtime', () {
+      final AssistantRequestPlan plan = AssistantRequestRouter.planFor(
+        text: '去杭州出差住哪家酒店方便',
+        hasPublicContext: false,
+      );
+      expect(plan.intent, AssistantIntent.tripPlanning);
+      expect(plan.mode, AssistantExecutionMode.publicRealtime);
+    });
+
+    test('复杂方案型 tripPlanning → publicDeep', () {
+      final AssistantRequestPlan plan = AssistantRequestRouter.planFor(
+        text: '下个月去成都出差三天怎么安排更合理',
+        hasPublicContext: false,
+      );
+      expect(plan.intent, AssistantIntent.tripPlanning);
+      expect(plan.mode, AssistantExecutionMode.publicDeep);
+    });
+
+    test('普通问答默认 → publicQuick', () {
+      final AssistantRequestPlan plan = AssistantRequestRouter.planFor(
+        text: '什么是 MCP',
+        hasPublicContext: false,
+      );
+      expect(plan.mode, AssistantExecutionMode.publicQuick);
+    });
+
+    test('复杂对比问答 → publicDeep', () {
+      final AssistantRequestPlan plan = AssistantRequestRouter.planFor(
+        text: '帮我对比一下小米和华为，哪个更适合商务出差',
+        hasPublicContext: false,
+      );
+      expect(plan.mode, AssistantExecutionMode.publicDeep);
     });
   });
 

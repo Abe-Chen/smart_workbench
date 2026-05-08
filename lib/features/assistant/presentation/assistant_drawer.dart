@@ -1,3 +1,6 @@
+import 'dart:math' as math;
+import 'dart:ui' as ui;
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -6,6 +9,9 @@ import '../application/assistant_state.dart';
 import '../domain/assistant_message.dart';
 import '../domain/assistant_result_card.dart';
 import 'widgets/assistant_ball.dart';
+import 'widgets/assistant_run_status_card.dart';
+import 'widgets/completion_undo_listener.dart';
+import 'widgets/confirm_card.dart';
 import 'widgets/assistant_result_card_view.dart';
 import 'widgets/message_bubble.dart';
 
@@ -31,6 +37,12 @@ class AssistantOverlay extends ConsumerWidget {
 
     return Stack(
       children: <Widget>[
+        _AssistantEdgeGlow(
+          stage: state.stage,
+          visible:
+              state.stage != AssistantStage.idle ||
+              state.followUpRemainingMs > 0,
+        ),
         if (!open)
           Positioned(
             left: 0,
@@ -48,25 +60,236 @@ class AssistantOverlay extends ConsumerWidget {
           child: Material(
             elevation: 0,
             color: Colors.transparent,
-            child: Container(
-              decoration: BoxDecoration(
-                color: Colors.white,
-                borderRadius: BorderRadius.circular(28),
-                border: Border.all(color: const Color(0xFFDDE7FF)),
-                boxShadow: const <BoxShadow>[
-                  BoxShadow(
-                    color: Color(0x220D47A1),
-                    blurRadius: 30,
-                    offset: Offset(-4, 12),
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(28),
+              child: BackdropFilter(
+                filter: ui.ImageFilter.blur(sigmaX: 18, sigmaY: 18),
+                child: Container(
+                  decoration: BoxDecoration(
+                    gradient: const LinearGradient(
+                      begin: Alignment.topLeft,
+                      end: Alignment.bottomRight,
+                      colors: <Color>[Color(0xF8FFFFFF), Color(0xF1F6FAFF)],
+                    ),
+                    borderRadius: BorderRadius.circular(28),
+                    border: Border.all(
+                      color: Colors.white.withValues(alpha: 0.72),
+                    ),
+                    boxShadow: const <BoxShadow>[
+                      BoxShadow(
+                        color: Color(0x1F0D47A1),
+                        blurRadius: 34,
+                        offset: Offset(-6, 14),
+                      ),
+                      BoxShadow(
+                        color: Color(0x18FFFFFF),
+                        blurRadius: 10,
+                        offset: Offset(-3, -3),
+                      ),
+                    ],
                   ),
-                ],
+                  child: const _AssistantDrawerBody(),
+                ),
               ),
-              child: const _AssistantDrawerBody(),
             ),
           ),
         ),
       ],
     );
+  }
+}
+
+class _AssistantEdgeGlow extends StatefulWidget {
+  const _AssistantEdgeGlow({required this.stage, required this.visible});
+
+  final AssistantStage stage;
+  final bool visible;
+
+  @override
+  State<_AssistantEdgeGlow> createState() => _AssistantEdgeGlowState();
+}
+
+class _AssistantEdgeGlowState extends State<_AssistantEdgeGlow>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 2600),
+  );
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.visible) {
+      _controller.repeat();
+    }
+  }
+
+  @override
+  void didUpdateWidget(covariant _AssistantEdgeGlow oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.visible && !_controller.isAnimating) {
+      _controller.repeat();
+    } else if (!widget.visible && _controller.isAnimating) {
+      _controller.stop();
+    }
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final _EdgeGlowStyle style = _edgeGlowStyleFor(widget.stage);
+    return Positioned.fill(
+      child: IgnorePointer(
+        child: AnimatedOpacity(
+          opacity: widget.visible ? style.opacity : 0,
+          duration: const Duration(milliseconds: 260),
+          curve: Curves.easeOutCubic,
+          child: AnimatedBuilder(
+            animation: _controller,
+            builder: (BuildContext context, _) {
+              return CustomPaint(
+                painter: _EdgeGlowPainter(
+                  progress: _controller.value,
+                  primary: style.primary,
+                  secondary: style.secondary,
+                  strokeWidth: style.strokeWidth,
+                ),
+              );
+            },
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _EdgeGlowStyle {
+  const _EdgeGlowStyle({
+    required this.primary,
+    required this.secondary,
+    required this.opacity,
+    required this.strokeWidth,
+  });
+
+  final Color primary;
+  final Color secondary;
+  final double opacity;
+  final double strokeWidth;
+}
+
+_EdgeGlowStyle _edgeGlowStyleFor(AssistantStage stage) {
+  switch (stage) {
+    case AssistantStage.listen:
+      return const _EdgeGlowStyle(
+        primary: Color(0xFF28D8FF),
+        secondary: Color(0xFF6A7BFF),
+        opacity: 0.9,
+        strokeWidth: 5.5,
+      );
+    case AssistantStage.think:
+      return const _EdgeGlowStyle(
+        primary: Color(0xFF7C68FF),
+        secondary: Color(0xFF2F6BFF),
+        opacity: 0.74,
+        strokeWidth: 5,
+      );
+    case AssistantStage.answer:
+      return const _EdgeGlowStyle(
+        primary: Color(0xFF19C7BD),
+        secondary: Color(0xFF2F6BFF),
+        opacity: 0.62,
+        strokeWidth: 4.5,
+      );
+    case AssistantStage.confirm:
+      return const _EdgeGlowStyle(
+        primary: Color(0xFFFFA374),
+        secondary: Color(0xFF2F6BFF),
+        opacity: 0.86,
+        strokeWidth: 5.5,
+      );
+    case AssistantStage.error:
+      return const _EdgeGlowStyle(
+        primary: Color(0xFFE14D3A),
+        secondary: Color(0xFFFFB1A8),
+        opacity: 0.8,
+        strokeWidth: 5.5,
+      );
+    case AssistantStage.idle:
+      return const _EdgeGlowStyle(
+        primary: Color(0xFF2F6BFF),
+        secondary: Color(0xFF19C7BD),
+        opacity: 0.24,
+        strokeWidth: 4,
+      );
+  }
+}
+
+class _EdgeGlowPainter extends CustomPainter {
+  const _EdgeGlowPainter({
+    required this.progress,
+    required this.primary,
+    required this.secondary,
+    required this.strokeWidth,
+  });
+
+  final double progress;
+  final Color primary;
+  final Color secondary;
+  final double strokeWidth;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (size.isEmpty) {
+      return;
+    }
+
+    final Rect rect =
+        Offset(strokeWidth + 2, strokeWidth + 2) &
+        Size(
+          size.width - (strokeWidth + 2) * 2,
+          size.height - (strokeWidth + 2) * 2,
+        );
+    final RRect rrect = RRect.fromRectAndRadius(
+      rect,
+      const Radius.circular(34),
+    );
+    final SweepGradient sweep = SweepGradient(
+      transform: GradientRotation(progress * math.pi * 2),
+      colors: <Color>[
+        Colors.transparent,
+        primary.withValues(alpha: 0.16),
+        secondary.withValues(alpha: 0.95),
+        primary.withValues(alpha: 0.72),
+        Colors.transparent,
+      ],
+      stops: const <double>[0, 0.24, 0.48, 0.7, 1],
+    );
+
+    final Paint glowPaint = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = strokeWidth + 6
+      ..shader = sweep.createShader(rect)
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 8);
+    canvas.drawRRect(rrect, glowPaint);
+
+    final Paint corePaint = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = strokeWidth
+      ..shader = sweep.createShader(rect);
+    canvas.drawRRect(rrect, corePaint);
+  }
+
+  @override
+  bool shouldRepaint(covariant _EdgeGlowPainter oldDelegate) {
+    return oldDelegate.progress != progress ||
+        oldDelegate.primary != primary ||
+        oldDelegate.secondary != secondary ||
+        oldDelegate.strokeWidth != strokeWidth;
   }
 }
 
@@ -118,6 +341,13 @@ class _AssistantDrawerBodyState extends ConsumerState<_AssistantDrawerBody> {
         state.stage == AssistantStage.think ||
         state.stage == AssistantStage.answer;
     final bool listening = state.stage == AssistantStage.listen;
+    final bool confirming = state.pendingConfirm != null;
+    final bool inputBlocked = sending || listening || confirming;
+    final bool micBlocked = sending;
+    final bool showRunStatus =
+        (state.stage == AssistantStage.think ||
+            state.stage == AssistantStage.answer) &&
+        (state.progress.status?.trim().isNotEmpty ?? false);
     final List<AssistantMessage> visibleMessages = state.messages
         .where((AssistantMessage m) => m.isVisibleInChat)
         .toList();
@@ -126,9 +356,14 @@ class _AssistantDrawerBodyState extends ConsumerState<_AssistantDrawerBody> {
       padding: const EdgeInsets.fromLTRB(16, 14, 16, 14),
       child: Column(
         children: <Widget>[
+          const CompletionUndoListener(),
           _Header(stage: state.stage),
           const SizedBox(height: 10),
           const Divider(height: 1, color: Color(0xFFE8EEFB)),
+          if (showRunStatus) ...<Widget>[
+            const SizedBox(height: 10),
+            AssistantRunStatusCard(progress: state.progress),
+          ],
           Expanded(
             child: visibleMessages.isEmpty
                 ? const _EmptyHint()
@@ -140,6 +375,10 @@ class _AssistantDrawerBodyState extends ConsumerState<_AssistantDrawerBody> {
                         MessageBubble(message: visibleMessages[index]),
                   ),
           ),
+          if (state.pendingConfirm != null) ...<Widget>[
+            ConfirmCard(pending: state.pendingConfirm!),
+            const SizedBox(height: 8),
+          ],
           if (state.listenError != null && !listening)
             Padding(
               padding: const EdgeInsets.only(bottom: 6),
@@ -209,9 +448,11 @@ class _AssistantDrawerBodyState extends ConsumerState<_AssistantDrawerBody> {
             ),
             child: _InputBar(
               controller: _textCtrl,
-              disabled: sending || listening,
+              disabled: inputBlocked,
+              disabledHint: confirming ? '请先确认或取消当前操作' : null,
               listening: listening,
               listeningMode: state.listeningMode,
+              micBlocked: micBlocked,
               onSend: _send,
               onMicLongPressStart: () => ref
                   .read(assistantControllerProvider.notifier)
@@ -248,48 +489,75 @@ class _ListenStrip extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final bool hasSpeech = partialText.trim().isNotEmpty;
+    final String hint = hasSpeech
+        ? partialText.trim()
+        : _defaultHintFor(listeningMode, remainingMs);
     return Container(
       decoration: BoxDecoration(
-        color: const Color(0xFFEAF2FF),
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: const Color(0xFFCCDBFF)),
+        gradient: const LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: <Color>[Color(0xFAFFFFFF), Color(0xF0EEF6FF)],
+        ),
+        borderRadius: BorderRadius.circular(24),
+        border: Border.all(color: Colors.white),
+        boxShadow: const <BoxShadow>[
+          BoxShadow(
+            color: Color(0x1F2F6BFF),
+            blurRadius: 24,
+            offset: Offset(0, 10),
+          ),
+        ],
       ),
-      padding: const EdgeInsets.fromLTRB(12, 8, 6, 8),
+      padding: const EdgeInsets.fromLTRB(12, 10, 8, 10),
       child: Row(
         children: <Widget>[
-          const Icon(
-            Icons.graphic_eq_rounded,
-            color: Color(0xFF2F6BFF),
-            size: 18,
+          Container(
+            width: 40,
+            height: 40,
+            decoration: BoxDecoration(
+              gradient: const LinearGradient(
+                colors: <Color>[Color(0xFF28D8FF), Color(0xFF2F6BFF)],
+              ),
+              borderRadius: BorderRadius.circular(16),
+              boxShadow: const <BoxShadow>[
+                BoxShadow(
+                  color: Color(0x332F6BFF),
+                  blurRadius: 14,
+                  offset: Offset(0, 6),
+                ),
+              ],
+            ),
+            child: const Icon(Icons.mic_rounded, color: Colors.white, size: 21),
           ),
-          const SizedBox(width: 8),
+          const SizedBox(width: 10),
+          const _MiniVoiceWave(),
+          const SizedBox(width: 10),
           Expanded(
             child: Text(
-              partialText.isEmpty
-                  ? _defaultHintFor(listeningMode, remainingMs)
-                  : partialText,
+              hint,
               maxLines: 2,
               overflow: TextOverflow.ellipsis,
               style: TextStyle(
-                color: partialText.isEmpty
-                    ? const Color(0xFF7A8798)
-                    : const Color(0xFF1F2A44),
-                fontSize: 13,
-                fontWeight: FontWeight.w600,
-                height: 1.3,
+                color: hasSpeech
+                    ? const Color(0xFF1F2A44)
+                    : const Color(0xFF60708A),
+                fontSize: hasSpeech ? 14 : 13,
+                fontWeight: hasSpeech ? FontWeight.w800 : FontWeight.w700,
+                height: 1.35,
               ),
             ),
           ),
           if (listeningMode == AssistantListeningMode.openMic &&
-              partialText.isEmpty &&
               remainingMs > 0)
             Padding(
-              padding: const EdgeInsets.only(right: 2),
+              padding: const EdgeInsets.only(left: 8, right: 2),
               child: _CountdownBadge(label: '${(remainingMs / 1000).ceil()}s'),
             ),
           IconButton(
             tooltip: '取消',
-            icon: const Icon(Icons.close_rounded, size: 18),
+            icon: const Icon(Icons.close_rounded, size: 20),
             color: const Color(0xFF7A8798),
             onPressed: onCancel,
           ),
@@ -308,6 +576,33 @@ class _ListenStrip extends StatelessWidget {
   }
 }
 
+class _MiniVoiceWave extends StatelessWidget {
+  const _MiniVoiceWave();
+
+  @override
+  Widget build(BuildContext context) {
+    const List<double> heights = <double>[10, 18, 13, 22, 12];
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: <Widget>[
+        for (int i = 0; i < heights.length; i++) ...<Widget>[
+          Container(
+            width: 3,
+            height: heights[i],
+            decoration: BoxDecoration(
+              color: const Color(
+                0xFF2F6BFF,
+              ).withValues(alpha: i.isEven ? 0.72 : 0.42),
+              borderRadius: BorderRadius.circular(999),
+            ),
+          ),
+          if (i < heights.length - 1) const SizedBox(width: 3),
+        ],
+      ],
+    );
+  }
+}
+
 class _Header extends ConsumerWidget {
   const _Header({required this.stage});
   final AssistantStage stage;
@@ -315,20 +610,27 @@ class _Header extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final AssistantSessionMute sessionMute = ref.watch(
+      assistantControllerProvider.select((AssistantUiState s) => s.sessionMute),
+    );
+    final bool hasPendingConfirm = ref.watch(
       assistantControllerProvider.select(
-        (AssistantUiState s) => s.sessionMute,
+        (AssistantUiState s) => s.pendingConfirm != null,
       ),
     );
     final bool isMuted = sessionMute == AssistantSessionMute.muted;
+    final String statusLabel = hasPendingConfirm
+        ? '等你确认这一步操作'
+        : _stageStatusLabel(stage);
+    final Color statusColor = _stageAccentColor(stage);
     return Row(
       children: <Widget>[
         AssistantBall(stage: stage, size: 44),
         const SizedBox(width: 10),
-        const Expanded(
+        Expanded(
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: <Widget>[
-              Text(
+              const Text(
                 '小治',
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
@@ -338,20 +640,60 @@ class _Header extends ConsumerWidget {
                   color: Color(0xFF22324C),
                 ),
               ),
-              SizedBox(height: 2),
-              Text(
-                '在桌面贴着你工作',
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(
-                  fontSize: 11,
-                  color: Color(0xFF7A8798),
-                  fontWeight: FontWeight.w600,
-                ),
+              const SizedBox(height: 4),
+              Row(
+                children: <Widget>[
+                  Container(
+                    width: 6,
+                    height: 6,
+                    decoration: BoxDecoration(
+                      color: statusColor,
+                      shape: BoxShape.circle,
+                      boxShadow: <BoxShadow>[
+                        BoxShadow(
+                          color: statusColor.withValues(alpha: 0.28),
+                          blurRadius: 8,
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Text(
+                      statusLabel,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        fontSize: 11,
+                        color: Color(0xFF7A8798),
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ),
+                ],
               ),
             ],
           ),
         ),
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 5),
+          decoration: BoxDecoration(
+            color: statusColor.withValues(alpha: 0.1),
+            borderRadius: BorderRadius.circular(999),
+            border: Border.all(color: statusColor.withValues(alpha: 0.16)),
+          ),
+          child: Text(
+            _stageShortLabel(stage, hasPendingConfirm),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(
+              color: statusColor,
+              fontSize: 11,
+              fontWeight: FontWeight.w900,
+            ),
+          ),
+        ),
+        const SizedBox(width: 4),
         IconButton(
           tooltip: isMuted ? '本会话已静音，点击恢复跟随设置' : '本会话静音（不写入设置）',
           icon: Icon(
@@ -360,9 +702,7 @@ class _Header extends ConsumerWidget {
                 : Icons.notifications_active_outlined,
             size: 22,
           ),
-          color: isMuted
-              ? const Color(0xFFFF5252)
-              : const Color(0xFF7A8798),
+          color: isMuted ? const Color(0xFFFF5252) : const Color(0xFF7A8798),
           onPressed: () => ref
               .read(assistantControllerProvider.notifier)
               .setSessionMute(!isMuted),
@@ -387,11 +727,68 @@ class _Header extends ConsumerWidget {
           tooltip: '关闭',
           icon: const Icon(Icons.close_rounded, size: 22),
           color: const Color(0xFF7A8798),
-          onPressed: () =>
-              ref.read(assistantControllerProvider.notifier).closeDrawer(),
+          onPressed: hasPendingConfirm
+              ? null
+              : () => ref
+                    .read(assistantControllerProvider.notifier)
+                    .closeDrawer(),
         ),
       ],
     );
+  }
+}
+
+String _stageStatusLabel(AssistantStage stage) {
+  switch (stage) {
+    case AssistantStage.listen:
+      return '正在听你说话';
+    case AssistantStage.think:
+      return '正在整理上下文';
+    case AssistantStage.answer:
+      return '正在回答';
+    case AssistantStage.confirm:
+      return '等你确认这一步操作';
+    case AssistantStage.error:
+      return '遇到问题，需要处理';
+    case AssistantStage.idle:
+      return '随时可以唤醒';
+  }
+}
+
+String _stageShortLabel(AssistantStage stage, bool hasPendingConfirm) {
+  if (hasPendingConfirm) {
+    return '待确认';
+  }
+  switch (stage) {
+    case AssistantStage.listen:
+      return '听音中';
+    case AssistantStage.think:
+      return '处理中';
+    case AssistantStage.answer:
+      return '回答中';
+    case AssistantStage.confirm:
+      return '待确认';
+    case AssistantStage.error:
+      return '异常';
+    case AssistantStage.idle:
+      return '待命';
+  }
+}
+
+Color _stageAccentColor(AssistantStage stage) {
+  switch (stage) {
+    case AssistantStage.listen:
+      return const Color(0xFF0EA5E9);
+    case AssistantStage.think:
+      return const Color(0xFF6B5CFF);
+    case AssistantStage.answer:
+      return const Color(0xFF19AFA7);
+    case AssistantStage.confirm:
+      return const Color(0xFFFF8A3D);
+    case AssistantStage.error:
+      return const Color(0xFFE14D3A);
+    case AssistantStage.idle:
+      return const Color(0xFF2F6BFF);
   }
 }
 
@@ -402,6 +799,10 @@ class _FloatingAssistantSurface extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    final bool showRunStatus =
+        (state.stage == AssistantStage.think ||
+            state.stage == AssistantStage.answer) &&
+        (state.progress.status?.trim().isNotEmpty ?? false);
     if (state.stage == AssistantStage.listen) {
       return ConstrainedBox(
         constraints: const BoxConstraints(maxWidth: 520),
@@ -415,41 +816,11 @@ class _FloatingAssistantSurface extends ConsumerWidget {
       );
     }
 
-    if (state.stage == AssistantStage.think) {
-      return Container(
-        constraints: const BoxConstraints(maxWidth: 360),
-        padding: const EdgeInsets.fromLTRB(14, 10, 14, 10),
-        decoration: BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.circular(18),
-          border: Border.all(color: const Color(0xFFDDE7FF)),
-          boxShadow: const <BoxShadow>[
-            BoxShadow(
-              color: Color(0x140D47A1),
-              blurRadius: 18,
-              offset: Offset(0, 8),
-            ),
-          ],
-        ),
-        child: const Row(
-          mainAxisSize: MainAxisSize.min,
-          children: <Widget>[
-            SizedBox(
-              width: 18,
-              height: 18,
-              child: CircularProgressIndicator(strokeWidth: 2.2),
-            ),
-            SizedBox(width: 10),
-            Text(
-              '小治正在想...',
-              style: TextStyle(
-                color: Color(0xFF1F2A44),
-                fontSize: 13,
-                fontWeight: FontWeight.w600,
-              ),
-            ),
-          ],
-        ),
+    if (showRunStatus) {
+      return AssistantRunStatusCard(
+        progress: state.progress,
+        compact: true,
+        showExpandAction: true,
       );
     }
 
@@ -488,16 +859,20 @@ class _CompactReplyCard extends ConsumerWidget {
     return ConstrainedBox(
       constraints: const BoxConstraints(maxWidth: 520),
       child: Container(
-        padding: const EdgeInsets.fromLTRB(16, 14, 12, 12),
+        padding: const EdgeInsets.fromLTRB(16, 14, 12, 14),
         decoration: BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.circular(22),
-          border: Border.all(color: const Color(0xFFDDE7FF)),
+          gradient: const LinearGradient(
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            colors: <Color>[Color(0xFFFFFFFF), Color(0xFFF3F8FF)],
+          ),
+          borderRadius: BorderRadius.circular(24),
+          border: Border.all(color: Colors.white),
           boxShadow: const <BoxShadow>[
             BoxShadow(
-              color: Color(0x180D47A1),
-              blurRadius: 22,
-              offset: Offset(0, 10),
+              color: Color(0x1F0D47A1),
+              blurRadius: 28,
+              offset: Offset(0, 12),
             ),
           ],
         ),
@@ -507,50 +882,79 @@ class _CompactReplyCard extends ConsumerWidget {
           children: <Widget>[
             Row(
               children: <Widget>[
-                const Icon(
-                  Icons.auto_awesome_rounded,
-                  color: Color(0xFF2F6BFF),
-                  size: 18,
-                ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: Text(
-                    '小治',
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                      color: const Color(0xFF22324C),
-                      fontWeight: FontWeight.w800,
+                Container(
+                  width: 34,
+                  height: 34,
+                  decoration: BoxDecoration(
+                    gradient: const LinearGradient(
+                      colors: <Color>[Color(0xFF71C8FF), Color(0xFF5665FF)],
                     ),
+                    borderRadius: BorderRadius.circular(13),
+                    boxShadow: const <BoxShadow>[
+                      BoxShadow(
+                        color: Color(0x2F2F6BFF),
+                        blurRadius: 12,
+                        offset: Offset(0, 5),
+                      ),
+                    ],
+                  ),
+                  child: const Icon(
+                    Icons.auto_awesome_rounded,
+                    color: Colors.white,
+                    size: 17,
                   ),
                 ),
-                IconButton(
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: <Widget>[
+                      Text(
+                        '小治',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: Theme.of(context).textTheme.titleMedium
+                            ?.copyWith(
+                              color: const Color(0xFF22324C),
+                              fontWeight: FontWeight.w900,
+                            ),
+                      ),
+                      Text(
+                        followUpRemainingMs > 0 ? '可以继续追问' : '结果已整理',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                          color: const Color(0xFF7A8798),
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                _CardIconButton(
                   tooltip: '再播一遍',
-                  icon: const Icon(Icons.volume_up_rounded, size: 20),
-                  color: const Color(0xFF7A8798),
+                  icon: Icons.volume_up_rounded,
                   onPressed: () => ref
                       .read(assistantControllerProvider.notifier)
                       .replayLatestAssistantReply(),
                 ),
-                IconButton(
+                _CardIconButton(
                   tooltip: '展开抽屉',
-                  icon: const Icon(Icons.open_in_full_rounded, size: 20),
-                  color: const Color(0xFF7A8798),
+                  icon: Icons.open_in_full_rounded,
                   onPressed: () => ref
                       .read(assistantControllerProvider.notifier)
                       .openDrawer(),
                 ),
-                IconButton(
+                _CardIconButton(
                   tooltip: '关闭',
-                  icon: const Icon(Icons.close_rounded, size: 20),
-                  color: const Color(0xFF7A8798),
+                  icon: Icons.close_rounded,
                   onPressed: () => ref
                       .read(assistantControllerProvider.notifier)
                       .hideCompactReply(),
                 ),
               ],
             ),
-            const SizedBox(height: 4),
+            const SizedBox(height: 10),
             if (resultCard != null) ...<Widget>[
               AssistantResultCardView(card: resultCard!, compact: true),
               if (!hideDuplicateSummary) const SizedBox(height: 10),
@@ -563,40 +967,83 @@ class _CompactReplyCard extends ConsumerWidget {
                 style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                   color: const Color(0xFF1F2A44),
                   height: 1.45,
-                  fontWeight: FontWeight.w600,
+                  fontWeight: FontWeight.w700,
                 ),
               ),
             if (followUpRemainingMs > 0) ...<Widget>[
               const SizedBox(height: 12),
-              Row(
-                children: <Widget>[
-                  Text(
-                    '还需要什么？',
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                      color: const Color(0xFF60708A),
-                      fontWeight: FontWeight.w700,
+              Container(
+                padding: const EdgeInsets.fromLTRB(12, 9, 10, 9),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFEAF2FF),
+                  borderRadius: BorderRadius.circular(16),
+                  border: Border.all(color: const Color(0xFFD3E0FF)),
+                ),
+                child: Row(
+                  children: <Widget>[
+                    const Icon(
+                      Icons.mic_none_rounded,
+                      size: 17,
+                      color: Color(0xFF2F6BFF),
                     ),
-                  ),
-                  const Spacer(),
-                  _CountdownRing(progress: followUpProgress),
-                  const SizedBox(width: 8),
-                  Text(
-                    '${(followUpRemainingMs / 1000).ceil()}s',
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: Theme.of(context).textTheme.labelMedium?.copyWith(
-                      color: const Color(0xFF60708A),
-                      fontWeight: FontWeight.w800,
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        '还需要什么？',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color: const Color(0xFF60708A),
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
                     ),
-                  ),
-                ],
+                    _CountdownRing(progress: followUpProgress),
+                    const SizedBox(width: 8),
+                    Text(
+                      '${(followUpRemainingMs / 1000).ceil()}s',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                        color: const Color(0xFF60708A),
+                        fontWeight: FontWeight.w900,
+                      ),
+                    ),
+                  ],
+                ),
               ),
             ],
           ],
         ),
       ),
+    );
+  }
+}
+
+class _CardIconButton extends StatelessWidget {
+  const _CardIconButton({
+    required this.tooltip,
+    required this.icon,
+    required this.onPressed,
+  });
+
+  final String tooltip;
+  final IconData icon;
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    return IconButton(
+      tooltip: tooltip,
+      icon: Icon(icon, size: 19),
+      color: const Color(0xFF60708A),
+      padding: EdgeInsets.zero,
+      constraints: const BoxConstraints(minWidth: 34, minHeight: 34),
+      style: IconButton.styleFrom(
+        backgroundColor: const Color(0xFFF4F7FC),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      ),
+      onPressed: onPressed,
     );
   }
 }
@@ -697,22 +1144,26 @@ class _InputBar extends StatefulWidget {
   const _InputBar({
     required this.controller,
     required this.disabled,
+    required this.micBlocked,
     required this.listening,
     required this.listeningMode,
     required this.onSend,
     required this.onMicLongPressStart,
     required this.onMicLongPressEnd,
     required this.onMicLongPressCancel,
+    this.disabledHint,
   });
 
   final TextEditingController controller;
   final bool disabled;
+  final bool micBlocked;
   final bool listening;
   final AssistantListeningMode listeningMode;
   final VoidCallback onSend;
   final VoidCallback onMicLongPressStart;
   final VoidCallback onMicLongPressEnd;
   final VoidCallback onMicLongPressCancel;
+  final String? disabledHint;
 
   @override
   State<_InputBar> createState() => _InputBarState();
@@ -739,7 +1190,10 @@ class _InputBarState extends State<_InputBar> {
         ? (widget.listeningMode == AssistantListeningMode.pressToTalk
               ? '松开手发送'
               : '正在听，你可以直接说')
-        : (widget.disabled ? '小治回答中...' : '输入问题，或长按麦克风说话');
+        : (widget.disabled
+              ? (widget.disabledHint ?? '小治回答中...')
+              : '输入问题，或长按麦克风说话');
+    final bool canUseMic = widget.listening || !widget.micBlocked;
 
     return AnimatedContainer(
       duration: const Duration(milliseconds: 180),
@@ -765,9 +1219,13 @@ class _InputBarState extends State<_InputBar> {
         children: <Widget>[
           GestureDetector(
             behavior: HitTestBehavior.opaque,
-            onLongPressStart: (_) => widget.onMicLongPressStart(),
-            onLongPressEnd: (_) => widget.onMicLongPressEnd(),
-            onLongPressCancel: widget.onMicLongPressCancel,
+            onLongPressStart: canUseMic
+                ? (_) => widget.onMicLongPressStart()
+                : null,
+            onLongPressEnd: canUseMic
+                ? (_) => widget.onMicLongPressEnd()
+                : null,
+            onLongPressCancel: canUseMic ? widget.onMicLongPressCancel : null,
             child: AnimatedContainer(
               duration: const Duration(milliseconds: 180),
               width: 42,
@@ -776,7 +1234,9 @@ class _InputBarState extends State<_InputBar> {
               decoration: BoxDecoration(
                 color: widget.listening
                     ? const Color(0xFF2F6BFF)
-                    : const Color(0xFFF3F6FC),
+                    : (widget.micBlocked
+                          ? const Color(0xFFF6F8FC)
+                          : const Color(0xFFF3F6FC)),
                 borderRadius: BorderRadius.circular(14),
                 border: Border.all(
                   color: widget.listening
@@ -789,7 +1249,9 @@ class _InputBarState extends State<_InputBar> {
                 widget.listening ? Icons.mic_rounded : Icons.mic_none_rounded,
                 color: widget.listening
                     ? Colors.white
-                    : const Color(0xFF60708A),
+                    : (widget.micBlocked
+                          ? const Color(0xFFB7C3D9)
+                          : const Color(0xFF60708A)),
                 size: 22,
               ),
             ),

@@ -185,6 +185,10 @@ class _AssistantDock extends ConsumerWidget {
         final AssistantController controller = ref.read(
           assistantControllerProvider.notifier,
         );
+        if (assistantState.pendingConfirm != null) {
+          controller.openDrawer();
+          return;
+        }
         if (assistantState.drawerOpen) {
           controller.closeDrawer();
         } else {

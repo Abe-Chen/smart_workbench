@@ -11,7 +11,6 @@ class MessageBubble extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final bool isUser = message.role == AssistantRole.user;
-    final Color bg = isUser ? const Color(0xFF2F6BFF) : const Color(0xFFF1F4FA);
     final Color fg = isUser ? Colors.white : const Color(0xFF1F2A44);
     final Alignment align = isUser
         ? Alignment.centerRight
@@ -30,7 +29,31 @@ class MessageBubble extends StatelessWidget {
     final Widget bubble = Container(
       margin: const EdgeInsets.symmetric(vertical: 4),
       padding: const EdgeInsets.fromLTRB(14, 10, 14, 10),
-      decoration: BoxDecoration(color: bg, borderRadius: radius),
+      decoration: BoxDecoration(
+        color: isUser ? null : Colors.white.withValues(alpha: 0.88),
+        gradient: isUser
+            ? const LinearGradient(
+                colors: <Color>[Color(0xFF3C7BFF), Color(0xFF225CFF)],
+              )
+            : null,
+        borderRadius: radius,
+        border: isUser ? null : Border.all(color: const Color(0xFFE1E8F5)),
+        boxShadow: isUser
+            ? const <BoxShadow>[
+                BoxShadow(
+                  color: Color(0x1F2F6BFF),
+                  blurRadius: 12,
+                  offset: Offset(0, 6),
+                ),
+              ]
+            : const <BoxShadow>[
+                BoxShadow(
+                  color: Color(0x0F0D47A1),
+                  blurRadius: 12,
+                  offset: Offset(0, 6),
+                ),
+              ],
+      ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.end,
@@ -58,7 +81,7 @@ class MessageBubble extends StatelessWidget {
     return Align(
       alignment: align,
       child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 320),
+        constraints: const BoxConstraints(maxWidth: 340),
         child: Column(
           crossAxisAlignment: isUser
               ? CrossAxisAlignment.end

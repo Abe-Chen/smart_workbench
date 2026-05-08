@@ -1,6 +1,11 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../data/tools/complete_task_tool.dart';
+import '../data/tools/create_task_tool.dart';
+import '../data/tools/delete_task_tool.dart';
 import '../data/tools/get_user_location_tool.dart';
+import '../data/tools/query_tasks_tool.dart';
+import '../data/tools/update_task_tool.dart';
 import '../domain/assistant_tool.dart';
 
 class ToolRegistry {
@@ -25,5 +30,12 @@ class ToolRegistry {
 final Provider<ToolRegistry> toolRegistryProvider = Provider<ToolRegistry>((
   Ref ref,
 ) {
-  return ToolRegistry(<AssistantTool>[ref.watch(getUserLocationToolProvider)]);
+  return ToolRegistry(<AssistantTool>[
+    ref.watch(getUserLocationToolProvider),
+    ref.watch(queryTasksToolProvider),
+    ref.watch(createTaskToolProvider),
+    ref.watch(updateTaskToolProvider),
+    ref.watch(deleteTaskToolProvider),
+    ref.watch(completeTaskToolProvider),
+  ]);
 });
