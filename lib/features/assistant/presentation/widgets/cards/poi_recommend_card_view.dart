@@ -177,8 +177,14 @@ class _PoiRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final List<String> subInfo = _composeSubInfo(item);
+    final bool emphasizePrice =
+        subtype == PoiKind.hotel && (item.priceLabel ?? '').isNotEmpty;
+    final List<String> subInfo = _composeSubInfo(
+      item,
+      emphasizePrice: emphasizePrice,
+    );
     final String emoji = item.iconEmoji ?? _defaultEmojiFor(subtype);
+    final Widget? primaryMetric = _buildPrimaryMetric(emphasizePrice);
 
     return Row(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -210,9 +216,9 @@ class _PoiRow extends StatelessWidget {
                       ),
                     ),
                   ),
-                  if (item.rating != null) ...<Widget>[
+                  if (primaryMetric != null) ...<Widget>[
                     const SizedBox(width: 8),
-                    _RatingBadge(rating: item.rating!, theme: theme),
+                    primaryMetric,
                   ],
                 ],
               ),
@@ -233,6 +239,42 @@ class _PoiRow extends StatelessWidget {
           ),
         ),
       ],
+    );
+  }
+
+  Widget? _buildPrimaryMetric(bool emphasizePrice) {
+    if (emphasizePrice) {
+      return _PriceTag(price: item.priceLabel!, theme: theme, compact: compact);
+    }
+    if (item.rating != null) {
+      return _RatingBadge(rating: item.rating!, theme: theme);
+    }
+    return null;
+  }
+}
+
+class _PriceTag extends StatelessWidget {
+  const _PriceTag({
+    required this.price,
+    required this.theme,
+    required this.compact,
+  });
+
+  final String price;
+  final CardThemeToken theme;
+  final bool compact;
+
+  @override
+  Widget build(BuildContext context) {
+    return Text(
+      price,
+      maxLines: 1,
+      overflow: TextOverflow.ellipsis,
+      style: TextStyle(
+        color: theme.accent,
+        fontSize: compact ? 14 : 16,
+        fontWeight: FontWeight.w900,
+      ),
     );
   }
 }
@@ -293,9 +335,15 @@ class _PoiFooter extends StatelessWidget {
   }
 }
 
-List<String> _composeSubInfo(PoiItem item) {
+List<String> _composeSubInfo(PoiItem item, {required bool emphasizePrice}) {
   final List<String> parts = <String>[];
-  if ((item.priceLabel ?? '').isNotEmpty) parts.add(item.priceLabel!);
+  // emphasizePrice 时价格已经被提到主行，副行改放评分
+  if (!emphasizePrice && (item.priceLabel ?? '').isNotEmpty) {
+    parts.add(item.priceLabel!);
+  }
+  if (emphasizePrice && item.rating != null) {
+    parts.add('★ ${item.rating!.toStringAsFixed(1)}');
+  }
   if ((item.distanceLabel ?? '').isNotEmpty) parts.add(item.distanceLabel!);
   if ((item.tag ?? '').isNotEmpty) parts.add(item.tag!);
   return parts;
