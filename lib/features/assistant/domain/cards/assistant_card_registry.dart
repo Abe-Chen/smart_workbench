@@ -7,7 +7,10 @@ class AssistantCardRegistry {
   AssistantCardRegistry._();
 
   static final Map<String, AssistantCardParser> _parsers =
-      <String, AssistantCardParser>{'weather': WeatherCard.tryParse};
+      <String, AssistantCardParser>{
+        'weather': WeatherCard.tryParse,
+        'exchange_rate': ExchangeRateCard.tryParse,
+      };
 
   static AssistantResultCard? parse({
     required String type,

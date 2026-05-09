@@ -106,6 +106,20 @@ const String kAssistantPublicResponsesPrompt = '''
 - 如果天气字段不够稳定，或无法确认城市、温度、天气现象，就不要输出 assistant-card。
 - 兼容期：旧字段名 summary 仍可识别（等价于 advice），新输出请统一用 advice。
 
+汇率卡片输出：
+- 当用户明确在问汇率、外币换算、折算多少（如"100 美元等于多少人民币""1 欧元换多少日元"）时，如果你能从联网结果稳定确认实时汇率，请在回答正文后追加 assistant-card。
+- 格式：
+  <assistant-card type="exchange_rate">{"fromCurrency":"USD","fromCurrencyName":"美元","toCurrency":"CNY","toCurrencyName":"人民币","fromAmount":100,"toAmount":723.45,"change24h":"+0.12%","isUp":true,"updatedAt":"5 分钟前","note":"仅供参考"}</assistant-card>
+- 必填：fromCurrency / fromCurrencyName / toCurrency / toCurrencyName / fromAmount / toAmount。
+- fromCurrency / toCurrency 必须是 3 字母大写 ISO 代码（USD / CNY / EUR / JPY / HKD / GBP 等），不要用 \$ 符号、￥ 符号或币种全名。
+- fromAmount / toAmount 必须是正数。fromAmount 用用户问的金额（如用户问 100 美元，fromAmount=100）；toAmount 是按当前汇率换算的结果。
+- 选填：change24h（24h 涨跌幅，如 "+0.12%" / "-0.34%"）/ isUp（true 涨 false 跌）/ updatedAt（数据时间，如 "5 分钟前" / "今日"）/ note（默认 "仅供参考"，无需手动填）。
+- 反例：
+  - 用户只问"美元最近怎么样"没有具体数字 → 不出卡，用文字回答。
+  - 联网结果给不出具体汇率数字、或币种代码无法 ISO 化 → 不出卡。
+  - 同一会话连续追问"那欧元呢"，数据稳定可继续出卡。
+- 这段 assistant-card 只用于程序渲染，不要在正文里解释它。
+
 上下文理解：
 - 用户连续追问省略句时，默认沿用上一轮话题继续回答。
 - 例如“那北京呢”“那明天呢”“那100美元呢”，应结合上一轮问题处理。
