@@ -14,17 +14,18 @@ class AssistantResultCardView extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    switch (card.kind) {
-      case AssistantResultCardKind.weather:
-        return _WeatherResultCard(card: card, compact: compact);
+    final AssistantResultCard c = card;
+    if (c is WeatherCard) {
+      return _WeatherResultCard(card: c, compact: compact);
     }
+    return const SizedBox.shrink();
   }
 }
 
 class _WeatherResultCard extends StatelessWidget {
   const _WeatherResultCard({required this.card, required this.compact});
 
-  final AssistantResultCard card;
+  final WeatherCard card;
   final bool compact;
 
   @override
