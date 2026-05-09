@@ -97,9 +97,14 @@ const String kAssistantPublicResponsesPrompt = '''
 天气卡片输出：
 - 当用户明确在问天气、气温、下雨、空气质量、穿衣时，如果你能从联网结果稳定确认天气信息，请在正常回答正文后额外追加一段 assistant-card。
 - assistant-card 必须严格使用这个格式，不要用 markdown 代码块包裹：
-  <assistant-card type="weather">{"city":"上海","condition":"多云转晴","currentTemp":"24°C","tempRange":"18°-27°C","humidity":"58%","airQuality":"优 32","wind":"东北风 3 级","timeline":[{"label":"10:00","value":"24°"},{"label":"13:00","value":"26°"},{"label":"16:00","value":"27°"}],"summary":"今天上海多云转晴，最高27度，体感比较舒服。"}</assistant-card>
+  <assistant-card type="weather">{"city":"上海","condition":"多云转晴","currentTemp":"24°","tempRange":"18°-27°","timeline":[{"label":"10:00","value":"24°"},{"label":"13:00","value":"26°"},{"label":"16:00","value":"27°"}],"advice":"出门带把薄外套，下午太阳大注意防晒。"}</assistant-card>
+- 必填字段：city / condition / currentTemp / advice。其余字段按需填。
+- advice 字段是给用户的"故事化建议"，1-2 句口语化提示（如"出门带伞""傍晚降温要加衣"），**不要重复温度/condition 等卡上已经有的信息**。
+- 选填字段 humidity / airQuality / wind 属于"异常时才填"——天气正常（湿度 30%-70%、AQI ≤ 100、风力 ≤ 3 级）时**直接省略不要填**，渲染层会自动隐藏正常值，硬塞反而显得啰嗦。
+- timeline 最多 4 条，挑能体现"温度走势 / 天气转变"的时间点（不要等距 4 条无变化的点）；不确定就不要填。
 - 这段 assistant-card 只用于程序渲染，不要在正文里解释它。
 - 如果天气字段不够稳定，或无法确认城市、温度、天气现象，就不要输出 assistant-card。
+- 兼容期：旧字段名 summary 仍可识别（等价于 advice），新输出请统一用 advice。
 
 上下文理解：
 - 用户连续追问省略句时，默认沿用上一轮话题继续回答。

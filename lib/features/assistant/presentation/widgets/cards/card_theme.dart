@@ -17,6 +17,23 @@ class CardThemeToken {
   final Color bodyTextColor;
   final Color borderColor;
 
+  /// 深色背景主题（heroText 接近白色）。用于决定 icon/chip 的二级配色。
+  bool get isDarkBackground => heroTextColor.computeLuminance() > 0.7;
+
+  Color get iconBackgroundColor => isDarkBackground
+      ? Colors.white.withValues(alpha: 0.22)
+      : Colors.white.withValues(alpha: 0.78);
+
+  Color get iconForegroundColor => isDarkBackground ? Colors.white : accent;
+
+  Color get chipBackgroundColor => isDarkBackground
+      ? Colors.white.withValues(alpha: 0.20)
+      : Colors.white.withValues(alpha: 0.84);
+
+  Color get chipBorderColor => isDarkBackground
+      ? Colors.white.withValues(alpha: 0.30)
+      : borderColor;
+
   static const CardThemeToken sunny = CardThemeToken(
     gradient: <Color>[Color(0xFFFFD194), Color(0xFFFFA374)],
     accent: Color(0xFFFF8A4C),

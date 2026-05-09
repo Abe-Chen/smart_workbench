@@ -44,7 +44,10 @@ class WeatherCard extends AssistantResultCard {
   static WeatherCard? tryParse(Map<String, dynamic> json) {
     final String city = _readString(json['city']);
     final String condition = _readString(json['condition']);
-    final String summary = _readString(json['summary']);
+    // Phase 3 起字段语义改为 advice（故事化建议）。兼容期保留 summary 作为 fallback。
+    final String advice = _readString(json['advice']);
+    final String legacySummary = _readString(json['summary']);
+    final String summary = advice.isNotEmpty ? advice : legacySummary;
     final String currentTemp = _readString(json['currentTemp']);
     if (city.isEmpty ||
         condition.isEmpty ||
