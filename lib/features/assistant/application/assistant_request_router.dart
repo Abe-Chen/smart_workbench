@@ -175,7 +175,7 @@ class AssistantRequestRouter {
     if (_localDataPattern.hasMatch(text)) {
       return AssistantIntent.localDataQuery;
     }
-    if (_tripPlanningPattern.hasMatch(text)) {
+    if (_looksLikeTripPlanningIntent(text)) {
       return AssistantIntent.tripPlanning;
     }
     if (_localSearchPattern.hasMatch(text)) {
@@ -281,8 +281,25 @@ const Set<String> _implicitScheduleStopWords = <String>{
   '安排',
 };
 
-/// 行程规划："出差 / 旅行 / 旅游 / 行程"
-final RegExp _tripPlanningPattern = RegExp(r'(出差|旅行|旅游|行程|度假|自驾游|路线规划)');
+/// 行程规划："出差 / 旅行 / 旅游 / 行程 / 明确交通路线"。
+bool _looksLikeTripPlanningIntent(String text) {
+  if (_tripPlanningPattern.hasMatch(text)) {
+    return true;
+  }
+  return _explicitRoutePlanningPattern.hasMatch(text) ||
+      _trafficRoutePattern.hasMatch(text);
+}
+
+final RegExp _tripPlanningPattern = RegExp(r'(出差|旅行|旅游|行程|度假|自驾游)');
+
+final RegExp _explicitRoutePlanningPattern = RegExp(
+  r'(路线规划|导航|怎么去|怎么走|怎么过去|规划.{0,12}路线|查.{0,8}路线)',
+);
+
+final RegExp _trafficRoutePattern = RegExp(
+  r'(从.{1,18}到.{1,18}|(?:去|到|前往).{1,18}(?:路线|导航|怎么走|怎么去)|'
+  r'(?:开车|驾车|自驾|打车|地铁|公交|公共交通|坐车|步行|骑车).{0,12}(?:去|到|路线|导航))',
+);
 
 final RegExp _tripToolingPattern = RegExp(
   r'(路线|导航|怎么去|航班|高铁|火车|地铁|打车|酒店|民宿|餐厅|营业时间|开门|关门)',

@@ -7,6 +7,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../application/assistant_controller.dart';
 import '../application/assistant_state.dart';
 import '../domain/assistant_message.dart';
+import '../domain/assistant_proactive_suggestion.dart';
 import '../domain/assistant_result_card.dart';
 import 'widgets/assistant_ball.dart';
 import 'widgets/assistant_run_status_card.dart';
@@ -379,6 +380,11 @@ class _AssistantDrawerBodyState extends ConsumerState<_AssistantDrawerBody> {
             ConfirmCard(pending: state.pendingConfirm!),
             const SizedBox(height: 8),
           ],
+          if (state.proactiveSuggestion != null &&
+              state.pendingConfirm == null) ...<Widget>[
+            _ProactiveSuggestionCard(suggestion: state.proactiveSuggestion!),
+            const SizedBox(height: 8),
+          ],
           if (state.listenError != null && !listening)
             Padding(
               padding: const EdgeInsets.only(bottom: 6),
@@ -449,7 +455,7 @@ class _AssistantDrawerBodyState extends ConsumerState<_AssistantDrawerBody> {
             child: _InputBar(
               controller: _textCtrl,
               disabled: inputBlocked,
-              disabledHint: confirming ? '请先确认或取消当前操作' : null,
+              disabledHint: confirming ? '先确认或取消这一步' : null,
               listening: listening,
               listeningMode: state.listeningMode,
               micBlocked: micBlocked,
@@ -576,6 +582,163 @@ class _ListenStrip extends StatelessWidget {
   }
 }
 
+class _ProactiveSuggestionCard extends ConsumerWidget {
+  const _ProactiveSuggestionCard({required this.suggestion});
+
+  final AssistantProactiveSuggestion suggestion;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.fromLTRB(12, 11, 10, 11),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF6FAFF),
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: const Color(0xFFDCE7F8)),
+        boxShadow: const <BoxShadow>[
+          BoxShadow(
+            color: Color(0x100D47A1),
+            blurRadius: 16,
+            offset: Offset(0, 8),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: <Widget>[
+          Row(
+            children: <Widget>[
+              Container(
+                width: 30,
+                height: 30,
+                decoration: BoxDecoration(
+                  gradient: const LinearGradient(
+                    colors: <Color>[Color(0xFF71C8FF), Color(0xFF5665FF)],
+                  ),
+                  borderRadius: BorderRadius.circular(11),
+                ),
+                child: const Icon(
+                  Icons.auto_awesome_rounded,
+                  color: Colors.white,
+                  size: 16,
+                ),
+              ),
+              const SizedBox(width: 9),
+              Expanded(
+                child: Text(
+                  suggestion.title,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    color: Color(0xFF22324C),
+                    fontSize: 13,
+                    fontWeight: FontWeight.w900,
+                  ),
+                ),
+              ),
+              IconButton(
+                tooltip: '关闭建议',
+                icon: const Icon(Icons.close_rounded, size: 18),
+                color: const Color(0xFF7A8798),
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
+                onPressed: () => ref
+                    .read(assistantControllerProvider.notifier)
+                    .dismissProactiveSuggestion(),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Text(
+            suggestion.message,
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(
+              color: Color(0xFF4F6078),
+              fontSize: 12.5,
+              height: 1.35,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+          const SizedBox(height: 10),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: <Widget>[
+              for (final AssistantProactiveAction action in suggestion.actions)
+                _SuggestionActionChip(action: action),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _SuggestionActionChip extends ConsumerWidget {
+  const _SuggestionActionChip({required this.action});
+
+  final AssistantProactiveAction action;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final bool dismiss = action.dismissOnly;
+    final Color color = dismiss
+        ? const Color(0xFF7A8798)
+        : const Color(0xFF2F6BFF);
+    return ConstrainedBox(
+      constraints: const BoxConstraints(maxWidth: 142),
+      child: OutlinedButton.icon(
+        style: OutlinedButton.styleFrom(
+          foregroundColor: color,
+          side: BorderSide(
+            color: dismiss ? const Color(0xFFD5DEEA) : const Color(0xFFBFD0FF),
+          ),
+          backgroundColor: dismiss ? Colors.white : const Color(0xFFEAF2FF),
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+          minimumSize: const Size(0, 36),
+          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+          visualDensity: VisualDensity.compact,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(14),
+          ),
+        ),
+        icon: Icon(_suggestionActionIcon(action.kind), size: 16),
+        label: Text(
+          action.label,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w900),
+        ),
+        onPressed: () => ref
+            .read(assistantControllerProvider.notifier)
+            .submitProactiveSuggestionAction(action.id),
+      ),
+    );
+  }
+}
+
+IconData _suggestionActionIcon(AssistantProactiveActionKind kind) {
+  switch (kind) {
+    case AssistantProactiveActionKind.weather:
+      return Icons.wb_sunny_outlined;
+    case AssistantProactiveActionKind.tripPlan:
+      return Icons.map_outlined;
+    case AssistantProactiveActionKind.route:
+      return Icons.near_me_outlined;
+    case AssistantProactiveActionKind.checklist:
+      return Icons.checklist_rounded;
+    case AssistantProactiveActionKind.agenda:
+      return Icons.format_list_bulleted_rounded;
+    case AssistantProactiveActionKind.reminder:
+      return Icons.notifications_active_outlined;
+    case AssistantProactiveActionKind.dismiss:
+      return Icons.close_rounded;
+  }
+}
+
 class _MiniVoiceWave extends StatelessWidget {
   const _MiniVoiceWave();
 
@@ -619,7 +782,7 @@ class _Header extends ConsumerWidget {
     );
     final bool isMuted = sessionMute == AssistantSessionMute.muted;
     final String statusLabel = hasPendingConfirm
-        ? '等你确认这一步操作'
+        ? '等你确认一下'
         : _stageStatusLabel(stage);
     final Color statusColor = _stageAccentColor(stage);
     return Row(
@@ -747,7 +910,7 @@ String _stageStatusLabel(AssistantStage stage) {
     case AssistantStage.answer:
       return '正在回答';
     case AssistantStage.confirm:
-      return '等你确认这一步操作';
+      return '等你确认一下';
     case AssistantStage.error:
       return '遇到问题，需要处理';
     case AssistantStage.idle:

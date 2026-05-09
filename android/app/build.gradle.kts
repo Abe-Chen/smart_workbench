@@ -41,6 +41,7 @@ android {
 }
 
 dependencies {
+    implementation(fileTree(mapOf("dir" to "libs", "include" to listOf("*.jar", "*.aar"))))
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.5")
 }
 

@@ -89,7 +89,7 @@ class ConfirmCard extends ConsumerWidget {
                     ),
                     const SizedBox(height: 2),
                     Text(
-                      warning ? '这一步会影响已有数据' : '确认后会立即写入看板',
+                      warning ? '这一步会影响已有数据' : '确认后我就写进看板',
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: const TextStyle(
@@ -204,13 +204,13 @@ class ConfirmCard extends ConsumerWidget {
 String _confirmLabelForTool(String toolName) {
   switch (toolName) {
     case 'create_task':
-      return '创建日程';
+      return '放进日程';
     case 'update_task':
-      return '确认修改';
+      return '就这样改';
     case 'complete_task':
       return '标记完成';
     default:
-      return '确认执行';
+      return '确认';
   }
 }
 

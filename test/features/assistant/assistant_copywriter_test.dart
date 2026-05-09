@@ -68,7 +68,7 @@ void main() {
           pending: pending,
           result: <String, dynamic>{'ok': true, 'title': '需求讨论会'},
         ),
-        '已创建，明天 15:00 的「需求讨论会」已经放到日程里。',
+        '好的，已经放到日程里了。明天 15:00「需求讨论会」。',
       );
     });
 
@@ -112,7 +112,7 @@ void main() {
           pending: pending,
           result: <String, dynamic>{'ok': true, 'title': '新会议'},
         ),
-        '已修改「新会议」。',
+        '好的，改好了。',
       );
     });
 
@@ -131,7 +131,7 @@ void main() {
 
       expect(
         copywriter.pendingConfirmUnknown(pending),
-        '我还在等你确认是否删除「旧会议」。你可以说“确认”或“取消”，也可以点卡片上的按钮。',
+        '「旧会议」还没删。确认删除就说“确认”，不删就说“取消”。',
       );
       expect(copywriter.confirmCancelled(pending), '好，这次先不删除。');
     });

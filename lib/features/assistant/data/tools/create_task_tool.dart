@@ -28,10 +28,7 @@ class CreateTaskTool extends AssistantTool {
   Map<String, dynamic> get parametersSchema => <String, dynamic>{
     'type': 'object',
     'properties': <String, dynamic>{
-      'title': <String, dynamic>{
-        'type': 'string',
-        'description': '任务标题，必填。',
-      },
+      'title': <String, dynamic>{'type': 'string', 'description': '任务标题，必填。'},
       'start_date': <String, dynamic>{
         'type': 'string',
         'description': '开始日期 YYYY-MM-DD，必填。今天用今天的日期。',
@@ -103,12 +100,9 @@ class CreateTaskTool extends AssistantTool {
     final Task? task = _buildTaskFromArgs(args);
     if (task == null) {
       return const AssistantConfirmPreview(
-        title: '准备创建任务（参数缺失）',
+        title: '信息没识别完整',
         rows: <ConfirmRow>[
-          ConfirmRow(
-            label: '提示',
-            value: '标题或日期没识别清楚，确认后会按当前理解尝试创建。',
-          ),
+          ConfirmRow(label: '提示', value: '标题或日期还不清楚，我先不直接放进日程。'),
         ],
       );
     }
@@ -168,6 +162,5 @@ class CreateTaskTool extends AssistantTool {
   }
 }
 
-final Provider<CreateTaskTool> createTaskToolProvider = Provider<CreateTaskTool>(
-  (Ref ref) => CreateTaskTool(ref),
-);
+final Provider<CreateTaskTool> createTaskToolProvider =
+    Provider<CreateTaskTool>((Ref ref) => CreateTaskTool(ref));

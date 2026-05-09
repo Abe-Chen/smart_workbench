@@ -88,7 +88,7 @@ void main() {
           .buildConfirmPreview(<String, dynamic>{'start_date': '2026-05-09'});
 
       expect(preview, isNotNull);
-      expect(preview!.title, '准备创建任务（参数缺失）');
+      expect(preview!.title, '信息没识别完整');
       expect(preview.rows.single.label, '提示');
     });
   });

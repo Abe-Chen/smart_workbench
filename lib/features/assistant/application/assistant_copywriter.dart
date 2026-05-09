@@ -66,8 +66,8 @@ class AssistantCopywriter {
 
   String readyToConfirm(AssistantPendingWriteDraft draft) {
     return draft.kind == AssistantWriteDraftKind.reminder
-        ? '我整理好了，你看下没问题我就设置提醒。'
-        : '我整理好了，你看下没问题我就创建。';
+        ? '我理解是这样。确认后我就帮你设置提醒。'
+        : '我理解是这样。确认后我就放到日程里。';
   }
 
   String pendingConfirmUnknown(AssistantPendingConfirm pending) {
@@ -75,14 +75,61 @@ class AssistantCopywriter {
     final String subject = title == null || title.isEmpty ? '这项操作' : '「$title」';
     switch (pending.toolCall.name) {
       case 'create_task':
-        return '我还在等你确认是否创建$subject。你可以说“确认”或“取消”，也可以点卡片上的按钮。';
+        return '$subject还没放进日程。要继续的话说“确认”，不创建就说“取消”。';
       case 'update_task':
-        return '我还在等你确认是否修改$subject。你可以说“确认”或“取消”，也可以点卡片上的按钮。';
+        return '$subject还没改。要继续的话说“确认”，不改就说“取消”。';
       case 'delete_task':
-        return '我还在等你确认是否删除$subject。你可以说“确认”或“取消”，也可以点卡片上的按钮。';
+        return '$subject还没删。确认删除就说“确认”，不删就说“取消”。';
       default:
-        return '我还在等你确认刚才那项操作。你可以说“确认”或“取消”，也可以点卡片上的按钮。';
+        return '这一步还没确认。要继续的话说“确认”，不做就说“取消”。';
     }
+  }
+
+  String readyToUpdateTime({
+    required String title,
+    required DateTime date,
+    required int? currentStartMinutes,
+    required String currentTimeLabel,
+    required int newStartMinutes,
+  }) {
+    final String currentWhen = _schedulePointLabel(
+      date: date,
+      startMinutes: currentStartMinutes,
+      fallbackTimeLabel: currentTimeLabel,
+    );
+    return '我看到$currentWhen是「$title」，要改到${_timeLabel(newStartMinutes)}吗？';
+  }
+
+  String readyToDelete({
+    required String title,
+    required DateTime date,
+    required int? currentStartMinutes,
+    required String currentTimeLabel,
+  }) {
+    final String currentWhen = _schedulePointLabel(
+      date: date,
+      startMinutes: currentStartMinutes,
+      fallbackTimeLabel: currentTimeLabel,
+    );
+    return '我看到$currentWhen是「$title」，确认要删掉吗？';
+  }
+
+  String readyToChangeReminder({
+    required String title,
+    required String reminderLabel,
+    required bool removeReminder,
+  }) {
+    return removeReminder
+        ? '要把「$title」改成不提醒吗？'
+        : '要给「$title」加上$reminderLabel吗？';
+  }
+
+  String choiceReplyHint() {
+    return '我刚才列了几条，你可以说“第一条”或“第二条”。';
+  }
+
+  String choiceOutOfRange(int count) {
+    return '刚才只有 $count 条。你可以重新说“第一条”或“第二条”。';
   }
 
   String createCancelled(AssistantWriteDraftKind kind) {
@@ -100,7 +147,7 @@ class AssistantCopywriter {
       case 'delete_task':
         return '好，这次先不删除。';
       default:
-        return '好，这次先不执行。';
+        return '好，这次先不做。';
     }
   }
 
@@ -148,7 +195,7 @@ class AssistantCopywriter {
       case 'delete_task':
         return '这次没删除成功：$reason。你可以稍后再试。';
       default:
-        return '这次没执行成功：$reason。你可以稍后再试。';
+        return '这次没处理成功：$reason。你可以稍后再试。';
     }
   }
 
@@ -173,7 +220,7 @@ class AssistantCopywriter {
     final StringBuffer buffer = StringBuffer();
     final String dayLabel = _dayLabelForTasks(tasks);
     buffer.write(
-      dayLabel.isEmpty ? '这些是你的安排：' : '$dayLabel有 ${tasks.length} 个安排：',
+      dayLabel.isEmpty ? '这些是你的安排：' : '你$dayLabel有 ${tasks.length} 个安排：',
     );
     for (final Map<String, dynamic> task in tasks) {
       final String title =
@@ -204,28 +251,31 @@ class AssistantCopywriter {
     final String? when = _rowValue(pending.preview, '时间');
     if (kind == AssistantWriteDraftKind.reminder) {
       return when == null || when.isEmpty
-          ? '已设置，会提醒你「$title」。'
-          : '已设置，$when 会提醒你「$title」。';
+          ? '好的，提醒设置好了。'
+          : '好的，提醒设置好了。$when会提醒你「$title」。';
     }
     return when == null || when.isEmpty
-        ? '已创建，「$title」已经放到日程里。'
-        : '已创建，$when 的「$title」已经放到日程里。';
+        ? '好的，已经放到日程里了。'
+        : '好的，已经放到日程里了。$when「$title」。';
   }
 
   String _updatedText(
     AssistantPendingConfirm pending,
     Map<String, dynamic>? result,
   ) {
-    final String title =
-        (result?['title'] as String?) ??
-        _cleanChangedValue(_rowValue(pending.preview, '标题')) ??
-        '这项安排';
-    return '已修改「$title」。';
+    final String? newWhen = _cleanChangedValue(
+      _rowValue(pending.preview, '时间'),
+    );
+    if (newWhen != null &&
+        newWhen.isNotEmpty &&
+        !_looksTechnicalValue(newWhen)) {
+      return '好的，改好了。现在是$newWhen。';
+    }
+    return '好的，改好了。';
   }
 
   String _deletedText(AssistantPendingConfirm pending) {
-    final String title = _rowValue(pending.preview, '标题') ?? '这项安排';
-    return '已删除「$title」。';
+    return '好的，删掉了。';
   }
 
   String? _cleanChangedValue(String? value) {
@@ -233,6 +283,10 @@ class AssistantCopywriter {
     if (!value.contains('→')) return value;
     final List<String> parts = value.split('→');
     return parts.last.trim().isEmpty ? value : parts.last.trim();
+  }
+
+  bool _looksTechnicalValue(String value) {
+    return RegExp(r'^\d+$').hasMatch(value.trim());
   }
 
   List<Map<String, dynamic>> _readTaskList(Object? raw) {
@@ -296,6 +350,21 @@ class AssistantCopywriter {
     return '${_dateLabel(date)}${_timeLabel(minutes)}';
   }
 
+  String _schedulePointLabel({
+    required DateTime date,
+    required int? startMinutes,
+    required String fallbackTimeLabel,
+  }) {
+    if (startMinutes != null) {
+      return _dateTimeLabel(date, startMinutes);
+    }
+    final String cleanFallback = fallbackTimeLabel.trim();
+    if (cleanFallback.isNotEmpty && cleanFallback != '无时间') {
+      return '${_dateLabel(date)} $cleanFallback';
+    }
+    return _dateLabel(date);
+  }
+
   String _dateLabel(DateTime date) {
     final DateTime today = _dateOnly(DateTime.now());
     final DateTime target = _dateOnly(date);
@@ -334,8 +403,8 @@ class AssistantCopywriter {
       period = '晚上';
       displayHour = hour - 12;
     }
-    if (minute == 0) return '$period$displayHour 点';
-    if (minute == 30) return '$period$displayHour 点半';
-    return '$period$displayHour 点 $minute 分';
+    if (minute == 0) return '$period $displayHour 点';
+    if (minute == 30) return '$period $displayHour 点半';
+    return '$period $displayHour 点 $minute 分';
   }
 }

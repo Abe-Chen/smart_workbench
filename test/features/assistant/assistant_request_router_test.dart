@@ -137,6 +137,33 @@ void main() {
       expect(plan.intent, AssistantIntent.tripPlanning);
     });
 
+    test('路线规划表达 → tripPlanning', () {
+      final AssistantRequestPlan plan = AssistantRequestRouter.planFor(
+        text: '帮我规划明天去客户现场的路线',
+        hasPublicContext: false,
+      );
+      expect(plan.intent, AssistantIntent.tripPlanning);
+      expect(plan.mode, AssistantExecutionMode.publicRealtime);
+    });
+
+    test('交通路线查询 → tripPlanning', () {
+      final AssistantRequestPlan plan = AssistantRequestRouter.planFor(
+        text: '查一下到清河站的路线',
+        hasPublicContext: false,
+      );
+      expect(plan.intent, AssistantIntent.tripPlanning);
+      expect(plan.mode, AssistantExecutionMode.publicRealtime);
+    });
+
+    test('产品路线图不误判为交通路线', () {
+      final AssistantRequestPlan plan = AssistantRequestRouter.planFor(
+        text: '产品路线图怎么做',
+        hasPublicContext: false,
+      );
+      expect(plan.intent, AssistantIntent.generalQa);
+      expect(plan.mode, AssistantExecutionMode.publicQuick);
+    });
+
     test('日程写入 → scheduleWrite', () {
       final AssistantRequestPlan plan = AssistantRequestRouter.planFor(
         text: '帮我加个客户拜访的会议',
@@ -344,6 +371,12 @@ void main() {
       expect(s.origin, '上海');
       expect(s.destination, '成都');
       expect(s.duration, contains('3'));
+    });
+
+    test('路线：destination / transport', () {
+      final AssistantSlots s = AssistantSlots.from('到清河站开车去');
+      expect(s.destination, '清河站');
+      expect(s.transport, '开车');
     });
 
     test('日程标题：含锚点词 → 命中', () {

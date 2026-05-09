@@ -1,6 +1,7 @@
 import '../domain/assistant_execution_mode.dart';
 import '../domain/assistant_confirm_preview.dart';
 import '../domain/assistant_message.dart';
+import '../domain/assistant_proactive_suggestion.dart';
 import '../domain/assistant_result_card.dart';
 import '../domain/tool_call.dart';
 
@@ -199,6 +200,7 @@ class AssistantUiState {
     this.pendingWriteDraft,
     this.pendingConfirm,
     this.completionUndo,
+    this.proactiveSuggestion,
   });
 
   factory AssistantUiState.initial() => const AssistantUiState(
@@ -250,6 +252,9 @@ class AssistantUiState {
   /// 非 null 时 UI 弹 SnackBar，撤销窗口过期或用户主动 dismiss 后置 null。
   final AssistantCompletionUndo? completionUndo;
 
+  /// 写入成功后的小治主动建议。只用于展示和承接下一步，不参与 API 历史。
+  final AssistantProactiveSuggestion? proactiveSuggestion;
+
   AssistantUiState copyWith({
     bool? drawerOpen,
     AssistantStage? stage,
@@ -279,6 +284,8 @@ class AssistantUiState {
     bool clearPendingConfirm = false,
     AssistantCompletionUndo? completionUndo,
     bool clearCompletionUndo = false,
+    AssistantProactiveSuggestion? proactiveSuggestion,
+    bool clearProactiveSuggestion = false,
   }) {
     return AssistantUiState(
       drawerOpen: drawerOpen ?? this.drawerOpen,
@@ -313,6 +320,9 @@ class AssistantUiState {
       completionUndo: clearCompletionUndo
           ? null
           : (completionUndo ?? this.completionUndo),
+      proactiveSuggestion: clearProactiveSuggestion
+          ? null
+          : (proactiveSuggestion ?? this.proactiveSuggestion),
     );
   }
 }

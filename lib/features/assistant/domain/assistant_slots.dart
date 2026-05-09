@@ -9,6 +9,7 @@ class AssistantSlots {
     this.destination,
     this.date,
     this.duration,
+    this.transport,
     this.content,
     this.location,
     this.category,
@@ -32,6 +33,9 @@ class AssistantSlots {
   /// 行程时长（"两天一晚" / "3 天"）
   final String? duration;
 
+  /// 出行方式（"开车" / "地铁" / "打车"）
+  final String? transport;
+
   /// 提醒内容（"喝水" / "吃药"）
   final String? content;
 
@@ -50,6 +54,7 @@ class AssistantSlots {
       destination == null &&
       date == null &&
       duration == null &&
+      transport == null &&
       content == null &&
       location == null &&
       category == null;
@@ -67,6 +72,7 @@ class AssistantSlots {
       time: _extractTime(t),
       date: _extractDate(t),
       duration: _extractDuration(t),
+      transport: _extractTransport(t),
       origin: _extractOrigin(t),
       destination: _extractDestination(t),
       location: _extractLocation(t),
@@ -99,6 +105,11 @@ String? _extractDate(String text) {
 
 String? _extractDuration(String text) {
   final RegExpMatch? m = _durationPattern.firstMatch(text);
+  return m?.group(0)?.trim();
+}
+
+String? _extractTransport(String text) {
+  final RegExpMatch? m = _transportPattern.firstMatch(text);
   return m?.group(0)?.trim();
 }
 
@@ -202,14 +213,19 @@ final RegExp _durationPattern = RegExp(
 
 // 出发地："从 X 到/去/飞/出发"
 final RegExp _originPattern = RegExp(
-  r'从\s*([一-龥A-Za-z]{1,12}?)\s*(?:到|去|飞|出发|开车|坐车)',
+  r'从\s*([一-龥A-Za-z0-9]{1,18}?)\s*(?:到|去|飞|出发|开车|坐车|打车|驾车|$)',
 );
 
 // 目的地："去/到/飞 X 出差/玩/旅行/开会/见面"
 final RegExp _destinationPattern = RegExp(
-  r'(?:去|到|飞|开车去|出差去|去往)\s*'
-  r'([一-龥A-Za-z]{1,12}?)\s*'
-  r'(?:出差|玩|旅行|度假|开会|见客户|考察|看望|探亲|的|$)',
+  r'(?:去往|开车去|驾车去|打车去|出差去|去|到|飞)\s*'
+  r'([一-龥A-Za-z0-9]{1,18}?)\s*'
+  r'(?:出差|玩|旅行|度假|开会|见客户|考察|看望|探亲|路线|导航|怎么走|怎么去|'
+  r'开车去|驾车去|打车去|坐车去|过去|的|$)',
+);
+
+final RegExp _transportPattern = RegExp(
+  r'(开车|驾车|自驾|打车|出租车|网约车|地铁|公交|公共交通|步行|骑车|高铁|火车|飞机)',
 );
 
 // 附近搜索锚点："陆家嘴附近 / 浦东周边"

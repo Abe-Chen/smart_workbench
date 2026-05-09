@@ -6,6 +6,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../core/notifications/local_notification_service.dart';
 import '../core/notifications/notification_providers.dart';
 import '../core/utils/calendar_utils.dart';
+import '../features/assistant/application/assistant_wakeup_controller.dart';
 import '../features/home/application/home_view_mode.dart';
 import '../features/task/application/task_providers.dart';
 import 'router.dart';
@@ -53,6 +54,7 @@ class _SmartWorkbenchAppState extends ConsumerState<SmartWorkbenchApp>
         unawaited(
           ref.read(foregroundReminderControllerProvider).enterForeground(),
         );
+        unawaited(ref.read(assistantWakeupControllerProvider).start());
         break;
       case AppLifecycleState.paused:
       case AppLifecycleState.detached:
@@ -85,6 +87,7 @@ class _SmartWorkbenchAppState extends ConsumerState<SmartWorkbenchApp>
 
     _bootstrapped = true;
     await ref.read(foregroundReminderControllerProvider).enterForeground();
+    await ref.read(assistantWakeupControllerProvider).start();
   }
 
   Future<void> _handleReminderIntent(ReminderIntent intent) async {

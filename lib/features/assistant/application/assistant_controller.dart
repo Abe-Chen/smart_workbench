@@ -22,7 +22,9 @@ import '../../settings/domain/app_settings.dart';
 import '../domain/assistant_confirm_preview.dart';
 import '../domain/assistant_intent.dart';
 import '../domain/assistant_message.dart';
+import '../domain/assistant_proactive_suggestion.dart';
 import '../domain/assistant_result_card.dart';
+import '../domain/assistant_slots.dart';
 import '../domain/assistant_tool.dart';
 import '../domain/tool_call.dart';
 import '../prompts/system_prompt.dart';
@@ -40,6 +42,15 @@ const Duration _kRecentWriteContextWindow = Duration(minutes: 5);
 enum AssistantEntrySource { drawerText, drawerVoice, quickVoice }
 
 enum _PendingConfirmInputAction { confirm, cancel, unknown }
+
+enum _VoiceContinuationTrigger {
+  none,
+  confirm,
+  missingWriteSlots,
+  pendingTaskChoice,
+  tripPlanning,
+  proactiveSuggestion,
+}
 
 class AssistantController extends Notifier<AssistantUiState> {
   static const AssistantCopywriter _copywriter = AssistantCopywriter();
@@ -71,12 +82,15 @@ class AssistantController extends Notifier<AssistantUiState> {
   bool _heardSpeechInCurrentOpenMic = false;
   Timer? _followUpExpireTimer;
   Timer? _followUpTicker;
+  int _voiceContinuationGeneration = 0;
 
   AssistantEntrySource _lastEntrySource = AssistantEntrySource.drawerText;
   String? _lastPublicResponseId;
   AssistantIntent? _activeLocalIntent;
   _RecentConfirmedTask? _lastConfirmedTask;
   _PendingTaskChoice? _pendingTaskChoice;
+  _TripPlanningFrame? _pendingTripPlanningFrame;
+  bool _voiceContinuationAllowedForCurrentTurn = false;
 
   @override
   AssistantUiState build() {
@@ -87,6 +101,7 @@ class AssistantController extends Notifier<AssistantUiState> {
       _stopPublicProgressTracking();
       _cancelOpenMicWait();
       _cancelFollowUpWindow();
+      _cancelVoiceContinuation();
       _teardownVoice();
     });
     return AssistantUiState.initial();
@@ -117,9 +132,13 @@ class AssistantController extends Notifier<AssistantUiState> {
   Future<void> sendUserMessage(
     String text, {
     AssistantEntrySource source = AssistantEntrySource.drawerText,
+    bool allowVoiceContinuation = false,
   }) async {
     final String trimmed = text.trim();
     if (trimmed.isEmpty) return;
+    _cancelVoiceContinuation();
+    _voiceContinuationAllowedForCurrentTurn =
+        allowVoiceContinuation && source != AssistantEntrySource.drawerText;
     if (state.pendingConfirm != null) {
       await _handlePendingConfirmInput(trimmed, source: source);
       return;
@@ -130,6 +149,46 @@ class AssistantController extends Notifier<AssistantUiState> {
     }
     _cancelFollowUpWindow();
     _lastEntrySource = source;
+    if (state.proactiveSuggestion != null) {
+      final AssistantProactiveSuggestion suggestion =
+          state.proactiveSuggestion!;
+      if (_isProactiveSuggestionDismissInput(trimmed)) {
+        _beginLocalTaskTurn(trimmed, source: source, status: '正在收起建议');
+        state = state.copyWith(clearProactiveSuggestion: true);
+        _finishLocalWriteText('好，有需要再叫我。');
+        return;
+      }
+      final AssistantProactiveAction? action = _matchProactiveSuggestionAction(
+        suggestion,
+        trimmed,
+      );
+      if (action != null) {
+        state = state.copyWith(clearProactiveSuggestion: true);
+        if (action.dismissOnly) {
+          _beginLocalTaskTurn(trimmed, source: source, status: '正在收起建议');
+          _finishLocalWriteText('好，有需要再叫我。');
+          return;
+        }
+        final String prompt = action.prompt?.trim() ?? '';
+        if (prompt.isNotEmpty) {
+          await sendUserMessage(
+            prompt,
+            source: source,
+            allowVoiceContinuation: allowVoiceContinuation,
+          );
+          return;
+        }
+      }
+      state = state.copyWith(clearProactiveSuggestion: true);
+    }
+    if (_isConversationCloseInput(trimmed) &&
+        state.pendingWriteDraft == null &&
+        _pendingTaskChoice == null &&
+        _pendingTripPlanningFrame == null) {
+      _beginLocalTaskTurn(trimmed, source: source, status: '正在结束对话');
+      _finishLocalWriteText('好，有需要再叫我。');
+      return;
+    }
     if (state.pendingWriteDraft != null) {
       await _handlePendingWriteDraftInput(trimmed, source: source);
       return;
@@ -144,6 +203,20 @@ class AssistantController extends Notifier<AssistantUiState> {
           _lastPublicResponseId!.trim().isNotEmpty,
       lastPublicMode: _lastPublicMode,
     );
+    if (await _tryHandlePendingTripPlanningInput(
+      trimmed,
+      requestPlan: requestPlan,
+      source: source,
+    )) {
+      return;
+    }
+    if (await _tryHandleContextualTripPlanningInput(
+      trimmed,
+      requestPlan: requestPlan,
+      source: source,
+    )) {
+      return;
+    }
     _activeLocalIntent = requestPlan.route == AssistantRequestRoute.localTools
         ? requestPlan.intent
         : null;
@@ -162,6 +235,14 @@ class AssistantController extends Notifier<AssistantUiState> {
         requestPlan: requestPlan,
         source: source,
       );
+      return;
+    }
+
+    if (await _tryStartTripPlanningFrame(
+      trimmed,
+      requestPlan: requestPlan,
+      source: source,
+    )) {
       return;
     }
 
@@ -256,7 +337,10 @@ class AssistantController extends Notifier<AssistantUiState> {
           );
         } else {
           _appendAssistantPlaceholder();
-          _finishLocalWriteText(_copywriter.pendingConfirmUnknown(pending));
+          _finishLocalWriteText(
+            _copywriter.pendingConfirmUnknown(pending),
+            voiceContinuation: _VoiceContinuationTrigger.confirm,
+          );
           state = state.copyWith(stage: AssistantStage.confirm);
         }
         break;
@@ -300,10 +384,16 @@ class AssistantController extends Notifier<AssistantUiState> {
       _appendUserMessage(text);
     }
     _appendAssistantPlaceholder();
+    final String title =
+        _rowValueFromPreview(preview, '标题') ??
+        _rowValueFromPreview(pending.preview, '标题') ??
+        '这项安排';
     _replaceTrailingAssistant(
-      content: reminderKey == TaskReminderKey.none
-          ? '我改成不提醒了。你确认一下，没问题我再执行。'
-          : '我加上${_reminderShortLabel(reminderKey)}了。你确认一下，没问题我再执行。',
+      content: _copywriter.readyToChangeReminder(
+        title: title,
+        reminderLabel: _reminderShortLabel(reminderKey),
+        removeReminder: reminderKey == TaskReminderKey.none,
+      ),
       streaming: false,
     );
     state = state.copyWith(
@@ -319,6 +409,10 @@ class AssistantController extends Notifier<AssistantUiState> {
         status: '等你确认',
         statusOrigin: AssistantProgressOrigin.uxHint,
       ),
+    );
+    _maybeStartVoiceContinuation(
+      _latestAssistantPrompt(fallback: preview.title),
+      trigger: _VoiceContinuationTrigger.confirm,
     );
     return true;
   }
@@ -374,11 +468,21 @@ class AssistantController extends Notifier<AssistantUiState> {
       return false;
     }
 
+    if (_isCancelOrCloseInput(text)) {
+      _pendingTaskChoice = null;
+      _beginLocalTaskTurn(text, source: source, status: '正在结束选择');
+      _finishLocalWriteText('好，这次先不处理。');
+      return true;
+    }
+
     final int? selectedIndex = _parseChoiceIndex(text);
     if (selectedIndex == null) {
       if (_looksLikeChoiceReply(text)) {
         _beginLocalTaskTurn(text, source: source, status: '正在确认选择');
-        _finishLocalWriteText('我刚才列了几个候选项。你可以说“第一条”或“第二条”。');
+        _finishLocalWriteText(
+          _copywriter.choiceReplyHint(),
+          voiceContinuation: _VoiceContinuationTrigger.pendingTaskChoice,
+        );
         return true;
       }
       _pendingTaskChoice = null;
@@ -388,7 +492,8 @@ class AssistantController extends Notifier<AssistantUiState> {
     if (selectedIndex < 0 || selectedIndex >= pending.candidates.length) {
       _beginLocalTaskTurn(text, source: source, status: '正在确认选择');
       _finishLocalWriteText(
-        '刚才只有 ${pending.candidates.length} 条候选项。你可以重新说“第一条”或“第二条”。',
+        _copywriter.choiceOutOfRange(pending.candidates.length),
+        voiceContinuation: _VoiceContinuationTrigger.pendingTaskChoice,
       );
       return true;
     }
@@ -432,13 +537,29 @@ class AssistantController extends Notifier<AssistantUiState> {
       _pendingTaskChoice = _PendingTaskChoice.updateTime(
         candidates: selection.matches,
         newTime: newTime,
+        date: date,
       );
-      _finishLocalWriteText(_candidateSelectionMessage(selection, date));
+      _finishLocalWriteText(
+        _candidateSelectionMessage(
+          selection,
+          date,
+          actionText: '改哪一条',
+          timeCandidates: oldTime?.candidates,
+        ),
+        voiceContinuation: _VoiceContinuationTrigger.pendingTaskChoice,
+      );
       return;
     }
     if (!selection.hasSingleMatch) {
       _pendingTaskChoice = null;
-      _finishLocalWriteText(_candidateSelectionMessage(selection, date));
+      _finishLocalWriteText(
+        _candidateSelectionMessage(
+          selection,
+          date,
+          actionText: '改哪一条',
+          timeCandidates: oldTime?.candidates,
+        ),
+      );
       return;
     }
 
@@ -458,7 +579,13 @@ class AssistantController extends Notifier<AssistantUiState> {
     await _enterConfirmForDeterministicTool(
       toolName: 'update_task',
       args: args,
-      message: '我找到了「${candidate.title}」。确认后把时间改到${_timeLabel(newStart)}。',
+      message: _copywriter.readyToUpdateTime(
+        title: candidate.title,
+        date: date,
+        currentStartMinutes: candidate.startMinutes,
+        currentTimeLabel: candidate.timeLabel,
+        newStartMinutes: newStart,
+      ),
     );
   }
 
@@ -477,13 +604,29 @@ class AssistantController extends Notifier<AssistantUiState> {
     if (selection.matches.length > 1) {
       _pendingTaskChoice = _PendingTaskChoice.delete(
         candidates: selection.matches,
+        date: date,
       );
-      _finishLocalWriteText(_candidateSelectionMessage(selection, date));
+      _finishLocalWriteText(
+        _candidateSelectionMessage(
+          selection,
+          date,
+          actionText: '删哪一条',
+          timeCandidates: times.isEmpty ? null : times.first.candidates,
+        ),
+        voiceContinuation: _VoiceContinuationTrigger.pendingTaskChoice,
+      );
       return;
     }
     if (!selection.hasSingleMatch) {
       _pendingTaskChoice = null;
-      _finishLocalWriteText(_candidateSelectionMessage(selection, date));
+      _finishLocalWriteText(
+        _candidateSelectionMessage(
+          selection,
+          date,
+          actionText: '删哪一条',
+          timeCandidates: times.isEmpty ? null : times.first.candidates,
+        ),
+      );
       return;
     }
 
@@ -492,7 +635,12 @@ class AssistantController extends Notifier<AssistantUiState> {
     await _enterConfirmForDeterministicTool(
       toolName: 'delete_task',
       args: <String, dynamic>{'task_id': candidate.id},
-      message: '我找到了「${candidate.title}」。确认后我再删除。',
+      message: _copywriter.readyToDelete(
+        title: candidate.title,
+        date: date,
+        currentStartMinutes: candidate.startMinutes,
+        currentTimeLabel: candidate.timeLabel,
+      ),
     );
   }
 
@@ -512,9 +660,11 @@ class AssistantController extends Notifier<AssistantUiState> {
         'task_id': recent.id,
         'reminder_key': reminderKey.name,
       },
-      message: reminderKey == TaskReminderKey.none
-          ? '我准备把「${recent.title}」改成不提醒。'
-          : '我准备给「${recent.title}」加上${_reminderShortLabel(reminderKey)}。',
+      message: _copywriter.readyToChangeReminder(
+        title: recent.title,
+        reminderLabel: _reminderShortLabel(reminderKey),
+        removeReminder: reminderKey == TaskReminderKey.none,
+      ),
     );
     return true;
   }
@@ -662,8 +812,10 @@ class AssistantController extends Notifier<AssistantUiState> {
 
   String _candidateSelectionMessage(
     _TaskCandidateSelection selection,
-    DateTime date,
-  ) {
+    DateTime date, {
+    required String actionText,
+    required List<int>? timeCandidates,
+  }) {
     if (selection.queryError != null) {
       final String reason =
           (selection.queryError?['reason'] as Object?)?.toString() ?? '查询失败';
@@ -671,12 +823,24 @@ class AssistantController extends Notifier<AssistantUiState> {
     }
     final String day = _dateLabel(date);
     if (selection.matches.length > 1) {
-      return '我找到几条都像是你说的安排。你要操作哪一个？\n${_candidateListText(selection.matches)}';
+      final String when = _selectionWhenLabel(date, timeCandidates);
+      return '$when有几条都像你说的日程，你要$actionText？\n${_candidateListText(selection.matches)}';
     }
     if (selection.allCandidates.isEmpty) {
-      return '我没找到$day的安排。你可以确认一下日期或时间。';
+      return '我没看到$day有安排。你可以确认一下日期或时间。';
     }
-    return '我没找到匹配的那条安排。$day已有：\n${_candidateListText(selection.allCandidates)}';
+    return '我没看到完全匹配的那条。$day已有这些安排，你看是哪一条？\n${_candidateListText(selection.allCandidates)}';
+  }
+
+  String _selectionWhenLabel(DateTime date, List<int>? timeCandidates) {
+    final String day = _dateLabel(date);
+    if (timeCandidates == null || timeCandidates.isEmpty) {
+      return day;
+    }
+    final int minutes = timeCandidates.length == 1
+        ? timeCandidates.single
+        : timeCandidates.last;
+    return '$day${_timeLabel(minutes)}附近';
   }
 
   String _candidateListText(List<_TaskCommandCandidate> candidates) {
@@ -698,14 +862,14 @@ class AssistantController extends Notifier<AssistantUiState> {
   }) async {
     final AssistantTool? tool = ref.read(toolRegistryProvider).find(toolName);
     if (tool == null) {
-      _finishLocalWriteText('这次没法执行：本地工具不可用。');
+      _finishLocalWriteText('这次没法处理：本地能力暂时不可用。');
       return;
     }
     final AssistantConfirmPreview? preview = await tool.buildConfirmPreview(
       args,
     );
     if (preview == null) {
-      _finishLocalWriteText('这次没识别清楚，先不执行。你可以换个说法再试。');
+      _finishLocalWriteText('这次没识别清楚，我先不做。你可以换个说法再试。');
       return;
     }
     final ToolCall call = ToolCall(
@@ -737,15 +901,25 @@ class AssistantController extends Notifier<AssistantUiState> {
             'start_time_minutes': newStart,
             'end_time_minutes': (newStart + duration).clamp(0, 1440),
           },
-          message:
-              '好的，我选了「${candidate.title}」。确认后把时间改到${_timeLabel(newStart)}。',
+          message: _copywriter.readyToUpdateTime(
+            title: candidate.title,
+            date: pending.date,
+            currentStartMinutes: candidate.startMinutes,
+            currentTimeLabel: candidate.timeLabel,
+            newStartMinutes: newStart,
+          ),
         );
         break;
       case _PendingTaskChoiceKind.delete:
         await _enterConfirmForDeterministicTool(
           toolName: 'delete_task',
           args: <String, dynamic>{'task_id': candidate.id},
-          message: '好的，我选了「${candidate.title}」。确认后我再删除。',
+          message: _copywriter.readyToDelete(
+            title: candidate.title,
+            date: pending.date,
+            currentStartMinutes: candidate.startMinutes,
+            currentTimeLabel: candidate.timeLabel,
+          ),
         );
         break;
     }
@@ -759,7 +933,7 @@ class AssistantController extends Notifier<AssistantUiState> {
     if (_confirmInputPattern.hasMatch(normalized)) {
       return _PendingConfirmInputAction.confirm;
     }
-    if (_cancelInputPattern.hasMatch(normalized)) {
+    if (_isCancelOrCloseInput(normalized)) {
       return _PendingConfirmInputAction.cancel;
     }
     return _PendingConfirmInputAction.unknown;
@@ -780,12 +954,542 @@ class AssistantController extends Notifier<AssistantUiState> {
     await _finishDraftOrAskForMore(draft);
   }
 
+  Future<bool> _tryStartTripPlanningFrame(
+    String text, {
+    required AssistantRequestPlan requestPlan,
+    required AssistantEntrySource source,
+  }) async {
+    if (!_shouldUseTripPlanningFrame(text, requestPlan)) {
+      return false;
+    }
+    final _TripPlanningFrame frame = _tripFrameFromSlots(
+      requestPlan.slots,
+      originalText: text,
+    );
+    await _continueTripPlanningFrame(
+      frame,
+      text: text,
+      source: source,
+      justMerged: false,
+    );
+    return true;
+  }
+
+  Future<bool> _tryHandlePendingTripPlanningInput(
+    String text, {
+    required AssistantRequestPlan requestPlan,
+    required AssistantEntrySource source,
+  }) async {
+    final _TripPlanningFrame? current = _pendingTripPlanningFrame;
+    if (current == null) {
+      return false;
+    }
+    if (_isTripPlanningFrameExpired(current)) {
+      _pendingTripPlanningFrame = null;
+      return false;
+    }
+
+    final String normalized = text.trim();
+    if (_isTripPlanningCancelInput(normalized)) {
+      _pendingTripPlanningFrame = null;
+      _beginLocalTaskTurn(text, source: source, status: '正在取消路线规划');
+      _finishLocalWriteText('好，刚才的路线规划先不继续了。');
+      return true;
+    }
+
+    final _TripPlanningFrame currentTurn = current.nextFollowUpTurn();
+    if (_resumeTripPlanningPattern.hasMatch(normalized)) {
+      _pendingTripPlanningFrame = currentTurn;
+      _beginLocalTaskTurn(text, source: source, status: '正在继续路线规划');
+      _finishLocalWriteText(
+        _missingTripPlanningPrompt(currentTurn),
+        voiceContinuation: _VoiceContinuationTrigger.tripPlanning,
+      );
+      return true;
+    }
+
+    if (_shouldInterruptTripPlanningFrame(text, requestPlan)) {
+      return false;
+    }
+
+    final _TripPlanningFrame incoming = _tripFrameFromSlots(
+      requestPlan.slots,
+      originalText: text,
+    );
+    final _TripPlanningFrame merged = _mergeTripPlanningFrame(
+      currentTurn,
+      incoming,
+      rawText: text,
+    );
+    if (merged.sameSlotsAs(currentTurn)) {
+      if (_shouldInterruptTripPlanningFrame(text, requestPlan)) {
+        return false;
+      }
+      _pendingTripPlanningFrame = currentTurn;
+      _beginLocalTaskTurn(text, source: source, status: '正在补充路线信息');
+      _finishLocalWriteText(
+        _missingTripPlanningPrompt(currentTurn),
+        voiceContinuation: _VoiceContinuationTrigger.tripPlanning,
+      );
+      return true;
+    }
+
+    await _continueTripPlanningFrame(
+      merged,
+      text: text,
+      source: source,
+      justMerged: true,
+    );
+    return true;
+  }
+
+  Future<bool> _tryHandleContextualTripPlanningInput(
+    String text, {
+    required AssistantRequestPlan requestPlan,
+    required AssistantEntrySource source,
+  }) async {
+    if (_pendingTripPlanningFrame != null) {
+      return false;
+    }
+    final _TripPlanningFrame? base = _recentTripPlanningFrameFromMessages();
+    if (base == null) {
+      return false;
+    }
+    if (_isTripPlanningCancelInput(text)) {
+      _pendingTripPlanningFrame = null;
+      _beginLocalTaskTurn(text, source: source, status: '正在取消路线规划');
+      _finishLocalWriteText('好，刚才的路线规划先不继续了。');
+      return true;
+    }
+    final _TripPlanningFrame incoming = _tripFrameFromSlots(
+      requestPlan.slots,
+      originalText: text,
+    );
+    if (!_shouldTreatAsTripPlanningSupplement(text, requestPlan, incoming)) {
+      return false;
+    }
+    final _TripPlanningFrame merged = _mergeTripPlanningFrame(
+      base,
+      incoming,
+      rawText: text,
+    );
+    if (merged.sameSlotsAs(base)) {
+      return false;
+    }
+    await _continueTripPlanningFrame(
+      merged,
+      text: text,
+      source: source,
+      justMerged: true,
+    );
+    return true;
+  }
+
+  bool _shouldUseTripPlanningFrame(
+    String text,
+    AssistantRequestPlan requestPlan,
+  ) {
+    return requestPlan.intent == AssistantIntent.tripPlanning &&
+        _routePlanningFramePattern.hasMatch(text);
+  }
+
+  bool _shouldInterruptTripPlanningFrame(
+    String text,
+    AssistantRequestPlan requestPlan,
+  ) {
+    if (requestPlan.intent.isLocalWrite ||
+        requestPlan.intent == AssistantIntent.localDataQuery ||
+        requestPlan.intent == AssistantIntent.localUiAction) {
+      _pendingTripPlanningFrame = null;
+      return true;
+    }
+    if (requestPlan.intent == AssistantIntent.realtimeInfo ||
+        requestPlan.intent == AssistantIntent.localSearch) {
+      _pendingTripPlanningFrame = null;
+      return true;
+    }
+    if (requestPlan.intent == AssistantIntent.tripPlanning ||
+        _routePlanningFramePattern.hasMatch(text)) {
+      return false;
+    }
+    final bool interrupted =
+        _explicitQuestionPattern.hasMatch(text) ||
+        _publicInterruptionPattern.hasMatch(text);
+    if (interrupted) {
+      _pendingTripPlanningFrame = null;
+    }
+    return interrupted;
+  }
+
+  bool _shouldTreatAsTripPlanningSupplement(
+    String text,
+    AssistantRequestPlan requestPlan,
+    _TripPlanningFrame incoming,
+  ) {
+    if (requestPlan.intent.isLocalWrite ||
+        requestPlan.intent == AssistantIntent.localDataQuery ||
+        requestPlan.intent == AssistantIntent.localUiAction ||
+        requestPlan.intent == AssistantIntent.realtimeInfo ||
+        requestPlan.intent == AssistantIntent.localSearch) {
+      return false;
+    }
+    if (_explicitQuestionPattern.hasMatch(text) &&
+        !_routePlanningFramePattern.hasMatch(text)) {
+      return false;
+    }
+    return incoming.origin != null ||
+        incoming.destination != null ||
+        incoming.transport != null ||
+        _extractLooseTripPlace(text) != null;
+  }
+
+  _TripPlanningFrame _tripFrameFromSlots(
+    AssistantSlots slots, {
+    required String originalText,
+  }) {
+    return _TripPlanningFrame(
+      date: _cleanTripSlot(slots.date),
+      origin: _cleanTripSlot(slots.origin),
+      destination: _cleanTripSlot(slots.destination),
+      duration: _cleanTripSlot(slots.duration),
+      transport: _normalizeTransport(_cleanTripSlot(slots.transport)),
+      destinationHint: _extractDestinationHint(originalText),
+    );
+  }
+
+  _TripPlanningFrame? _recentTripPlanningFrameFromMessages() {
+    AssistantMessage? lastAssistant;
+    AssistantMessage? lastUser;
+    for (final AssistantMessage message in state.messages.reversed) {
+      if (lastAssistant == null &&
+          message.role == AssistantRole.assistant &&
+          !message.streaming &&
+          message.content.trim().isNotEmpty) {
+        lastAssistant = message;
+        continue;
+      }
+      if (lastAssistant != null &&
+          message.role == AssistantRole.user &&
+          message.content.trim().isNotEmpty) {
+        lastUser = message;
+        break;
+      }
+    }
+    if (lastAssistant == null || lastUser == null) {
+      return null;
+    }
+    if (DateTime.now().difference(lastAssistant.createdAt) >
+        _tripPlanningFrameTtl) {
+      return null;
+    }
+    if (!_assistantAskedForTripPlanningSlots(lastAssistant.content)) {
+      return null;
+    }
+    final String lastUserText = lastUser.content.trim();
+    final AssistantSlots slots = AssistantSlots.from(lastUserText);
+    final _TripPlanningFrame frame = _tripFrameFromSlots(
+      slots,
+      originalText: lastUserText,
+    );
+    if (frame.date == null &&
+        frame.origin == null &&
+        frame.destination == null &&
+        frame.transport == null &&
+        frame.destinationHint == null) {
+      return null;
+    }
+    return frame;
+  }
+
+  bool _assistantAskedForTripPlanningSlots(String text) {
+    final bool asksForInfo = RegExp(
+      r'(提供|告诉|补充|确认|需要|方便说|请说|麻烦|还差|还需要|说一下|填一下|给我)',
+    ).hasMatch(text);
+    if (!asksForInfo && !RegExp(r'[？?]').hasMatch(text)) {
+      return false;
+    }
+    int slotGroups = 0;
+    if (RegExp(r'(出发地|出发地点|从哪里出发|从哪儿出发)').hasMatch(text)) {
+      slotGroups += 1;
+    }
+    if (RegExp(r'(目的地|具体地址|客户现场|到哪里|去哪|去哪里)').hasMatch(text)) {
+      slotGroups += 1;
+    }
+    if (RegExp(r'(出行方式|怎么过去|怎么去|怎么走|导航|自驾|公共交通|打车|地铁|公交)').hasMatch(text)) {
+      slotGroups += 1;
+    }
+    return slotGroups >= 2;
+  }
+
+  _TripPlanningFrame _mergeTripPlanningFrame(
+    _TripPlanningFrame current,
+    _TripPlanningFrame incoming, {
+    required String rawText,
+  }) {
+    final String? loosePlace = _extractLooseTripPlace(rawText);
+    String? origin = incoming.origin ?? current.origin;
+    String? destination = incoming.destination ?? current.destination;
+    final bool hasConcreteDestination = !_isGenericTripDestination(
+      current.destination,
+    );
+
+    if (incoming.destination != null &&
+        !_isGenericTripDestination(incoming.destination)) {
+      destination = incoming.destination;
+    } else if (loosePlace != null) {
+      if (current.needsDestination) {
+        destination = loosePlace;
+      } else if (current.origin == null && hasConcreteDestination) {
+        origin = loosePlace;
+      }
+    }
+
+    if (incoming.origin != null) {
+      origin = incoming.origin;
+    }
+
+    return current.copyWith(
+      date: incoming.date,
+      origin: origin,
+      destination: destination,
+      duration: incoming.duration,
+      transport: incoming.transport,
+      destinationHint: incoming.destinationHint,
+    );
+  }
+
+  Future<void> _continueTripPlanningFrame(
+    _TripPlanningFrame frame, {
+    required String text,
+    required AssistantEntrySource source,
+    required bool justMerged,
+  }) async {
+    if (!frame.isReady) {
+      _pendingTripPlanningFrame = frame;
+      _beginLocalTaskTurn(text, source: source, status: '正在补充路线信息');
+      _finishLocalWriteText(
+        _missingTripPlanningPrompt(frame),
+        voiceContinuation: _VoiceContinuationTrigger.tripPlanning,
+      );
+      return;
+    }
+
+    _pendingTripPlanningFrame = null;
+    await _runPublicTaskFrameTurn(
+      displayText: text,
+      publicQuery: _tripPlanningPublicQuery(frame),
+      source: source,
+      mode: AssistantExecutionMode.publicRealtime,
+    );
+  }
+
+  Future<void> _runPublicTaskFrameTurn({
+    required String displayText,
+    required String publicQuery,
+    required AssistantEntrySource source,
+    required AssistantExecutionMode mode,
+  }) async {
+    _cancelFollowUpWindow();
+    _lastEntrySource = source;
+    _aborted = false;
+    final AssistantMessage userMsg = AssistantMessage(
+      role: AssistantRole.user,
+      content: displayText,
+    );
+    final AssistantMessage placeholder = AssistantMessage(
+      role: AssistantRole.assistant,
+      content: '',
+      streaming: true,
+    );
+    state = state.copyWith(
+      stage: AssistantStage.think,
+      messages: <AssistantMessage>[...state.messages, userMsg, placeholder],
+      replySurface: AssistantReplySurface.none,
+      clearCompactReply: true,
+      clearError: true,
+      clearErrorState: true,
+      progress: AssistantProgressState(
+        mode: mode,
+        phase: AssistantProgressPhase.preparingContext,
+        status: '正在整理路线信息',
+        statusOrigin: AssistantProgressOrigin.uxHint,
+        steps: const <String>['已补全路线信息'],
+        startedAtMillis: DateTime.now().millisecondsSinceEpoch,
+      ),
+    );
+    await _runPublicResponse(
+      publicQuery,
+      continuePublicContext: false,
+      mode: mode,
+    );
+  }
+
+  String _missingTripPlanningPrompt(_TripPlanningFrame frame) {
+    final List<String> missing = <String>[];
+    if (frame.origin == null) {
+      missing.add('从哪里出发');
+    }
+    if (frame.needsDestination) {
+      final String target = frame.destinationHint ?? frame.destination ?? '目的地';
+      missing.add(target == '目的地' ? '要去哪里' : '$target具体到哪里');
+    }
+    if (frame.transport == null) {
+      missing.add('打算怎么过去');
+    }
+
+    final String known = _tripPlanningKnownPrefix(frame);
+    if (missing.isEmpty) {
+      return '$known我来给你规划路线。';
+    }
+    if (known.isNotEmpty) {
+      return '$known${_joinChineseQuestions(missing)}？';
+    }
+    return '可以，我先帮你规划。${_joinChineseQuestions(missing)}？';
+  }
+
+  String _tripPlanningKnownPrefix(_TripPlanningFrame frame) {
+    final List<String> parts = <String>[];
+    if (frame.date != null) {
+      parts.add(frame.date!);
+    }
+    if (frame.origin != null) {
+      parts.add('从${frame.origin}出发');
+    }
+    if (frame.destination != null) {
+      parts.add('去${frame.destination}');
+    } else if (frame.destinationHint != null) {
+      parts.add('去${frame.destinationHint}');
+    }
+    if (frame.transport != null) {
+      parts.add(frame.transport!);
+    }
+    if (parts.isEmpty) {
+      return '';
+    }
+    return '好，我记下${parts.join('，')}。';
+  }
+
+  String _joinChineseQuestions(List<String> items) {
+    if (items.length == 1) {
+      return items.single;
+    }
+    if (items.length == 2) {
+      return '${items.first}，以及${items.last}';
+    }
+    return '${items.sublist(0, items.length - 1).join('，')}，以及${items.last}';
+  }
+
+  String _tripPlanningPublicQuery(_TripPlanningFrame frame) {
+    final String date = frame.date ?? '用户未指定';
+    final String duration = frame.duration ?? '用户未指定';
+    return '请帮用户规划路线。\n'
+        '日期：$date\n'
+        '出发地：${frame.origin}\n'
+        '目的地：${frame.destination}\n'
+        '出行方式：${frame.transport}\n'
+        '行程时长：$duration\n'
+        '要求：先给结论，再给关键路线、预计耗时、注意事项；如果实时路况或班次无法确认，要明确说明。';
+  }
+
+  bool _isTripPlanningFrameExpired(_TripPlanningFrame frame) {
+    if (DateTime.now().millisecondsSinceEpoch - frame.createdAtMillis >
+        _tripPlanningFrameTtl.inMilliseconds) {
+      return true;
+    }
+    return frame.followUpTurns >= _tripPlanningFrameMaxFollowUps;
+  }
+
+  bool _isTripPlanningCancelInput(String text) {
+    final String compact = text.replaceAll(RegExp(r'[，。！？,.!?\s]+'), '');
+    return _isCancelOrCloseInput(compact) ||
+        _tripPlanningCancelPattern.hasMatch(compact);
+  }
+
+  String? _cleanTripSlot(String? value) {
+    final String cleaned =
+        value
+            ?.replaceAll(RegExp(r'[，。！？,.!?\s]+$'), '')
+            .replaceAll(RegExp(r'^到\s*'), '')
+            .trim() ??
+        '';
+    return cleaned.isEmpty ? null : cleaned;
+  }
+
+  String? _normalizeTransport(String? value) {
+    if (value == null) {
+      return null;
+    }
+    return switch (value) {
+      '驾车' || '自驾' => '开车',
+      '出租车' || '网约车' => '打车',
+      _ => value,
+    };
+  }
+
+  String? _extractDestinationHint(String text) {
+    if (text.contains('客户现场')) {
+      return '客户现场';
+    }
+    if (text.contains('公司')) {
+      return '公司';
+    }
+    return null;
+  }
+
+  String? _extractLooseTripPlace(String text) {
+    final String normalized = text.trim();
+    if (_isTripPlanningCancelInput(normalized)) {
+      return null;
+    }
+    if (RegExp(r'^从').hasMatch(normalized)) {
+      return null;
+    }
+    final RegExpMatch? explicit = RegExp(
+      r'(?:目的地是|客户现场在|地址是|到|去)\s*([一-龥A-Za-z0-9]{2,18})',
+    ).firstMatch(normalized);
+    if (explicit != null) {
+      final String? raw = explicit.group(1);
+      final String cleaned = _cleanLooseTripPlace(raw);
+      return cleaned.isEmpty ? null : cleaned;
+    }
+    if (_looksLikeShortTripPlace(normalized)) {
+      return _cleanLooseTripPlace(normalized);
+    }
+    return null;
+  }
+
+  String _cleanLooseTripPlace(String? raw) {
+    if (raw == null) {
+      return '';
+    }
+    return raw
+        .replaceAll(RegExp(r'(开车|驾车|自驾|打车|坐车|地铁|公交|公共交通|步行|骑车).*'), '')
+        .replaceAll(RegExp(r'[，。！？,.!?\s]+'), '')
+        .trim();
+  }
+
+  bool _looksLikeShortTripPlace(String text) {
+    final String compact = text.replaceAll(RegExp(r'[，。！？,.!?\s]+'), '');
+    if (compact.length < 2 || compact.length > 18) {
+      return false;
+    }
+    if (_tripPlanningControlReplyPattern.hasMatch(compact)) {
+      return false;
+    }
+    if (_routePlanningFramePattern.hasMatch(compact) ||
+        _explicitQuestionPattern.hasMatch(compact) ||
+        _publicInterruptionPattern.hasMatch(compact)) {
+      return false;
+    }
+    return RegExp(r'^[一-龥A-Za-z0-9]+$').hasMatch(compact);
+  }
+
   Future<void> _handlePendingWriteDraftInput(
     String text, {
     required AssistantEntrySource source,
   }) async {
     final AssistantPendingWriteDraft current = state.pendingWriteDraft!;
-    if (_cancelInputPattern.hasMatch(text.trim())) {
+    if (_isCancelOrCloseInput(text)) {
       _beginLocalWriteTurn(text, source: source);
       state = state.copyWith(clearPendingWriteDraft: true);
       _finishLocalWriteText(_copywriter.createCancelled(current.kind));
@@ -894,7 +1598,10 @@ class AssistantController extends Notifier<AssistantUiState> {
   ) async {
     if (!draft.isComplete) {
       state = state.copyWith(pendingWriteDraft: draft);
-      _finishLocalWriteText(_missingDraftPrompt(draft));
+      _finishLocalWriteText(
+        _missingDraftPrompt(draft),
+        voiceContinuation: _VoiceContinuationTrigger.missingWriteSlots,
+      );
       return;
     }
 
@@ -999,8 +1706,12 @@ class AssistantController extends Notifier<AssistantUiState> {
     );
   }
 
-  void _finishLocalWriteText(String text) {
-    _finishAssistantTurn(text);
+  void _finishLocalWriteText(
+    String text, {
+    _VoiceContinuationTrigger voiceContinuation =
+        _VoiceContinuationTrigger.none,
+  }) {
+    _finishAssistantTurn(text, voiceContinuation: voiceContinuation);
     state = state.copyWith(
       drawerOpen: true,
       replySurface: AssistantReplySurface.drawer,
@@ -1503,9 +2214,7 @@ class AssistantController extends Notifier<AssistantUiState> {
         _setProgressStatus('正在整理回答');
         if (_activeLocalIntent?.isLocalWrite == true &&
             _looksLikeLocalWriteSuccessClaim(roundResult.content)) {
-          _finishAssistantTurn(
-            '这次还没有真正执行。请重新说一遍要创建、修改或删除的内容，我会先给你确认卡，确认后才会写入。',
-          );
+          _finishAssistantTurn('我还没真的写进去。你重新说一遍要创建、修改或删除的内容，我会先给你确认卡，确认后再写入。');
           return;
         }
         _finishAssistantTurn(roundResult.content);
@@ -1552,7 +2261,7 @@ class AssistantController extends Notifier<AssistantUiState> {
           preview = await tool.buildConfirmPreview(args);
         } catch (e) {
           preview = AssistantConfirmPreview(
-            title: '准备执行 ${call.name}（预览失败）',
+            title: '准备处理 ${call.name}（预览失败）',
             rows: <ConfirmRow>[ConfirmRow(label: '错误', value: '$e')],
           );
         }
@@ -1679,6 +2388,10 @@ class AssistantController extends Notifier<AssistantUiState> {
         statusOrigin: AssistantProgressOrigin.uxHint,
       ),
     );
+    _maybeStartVoiceContinuation(
+      _latestAssistantPrompt(fallback: preview.title),
+      trigger: _VoiceContinuationTrigger.confirm,
+    );
   }
 
   /// 用户在 ConfirmCard 上点"确认"。
@@ -1705,7 +2418,7 @@ class AssistantController extends Notifier<AssistantUiState> {
       progress: const AssistantProgressState(
         mode: AssistantExecutionMode.local,
         phase: AssistantProgressPhase.executing,
-        status: '正在执行',
+        status: '正在处理',
         statusOrigin: AssistantProgressOrigin.uxHint,
       ),
     );
@@ -1722,14 +2435,13 @@ class AssistantController extends Notifier<AssistantUiState> {
     }
     _appendToolResult(call: pending.toolCall, result: result);
     if (_shouldFinishWriteToolLocally(pending.toolCall.name)) {
-      _rememberConfirmedTask(pending, _tryDecodeJsonMap(result));
+      final Map<String, dynamic>? decoded = _tryDecodeJsonMap(result);
+      _rememberConfirmedTask(pending, decoded);
       _appendAssistantPlaceholder();
       _finishLocalWriteText(
-        _copywriter.confirmedWriteResult(
-          pending: pending,
-          result: _tryDecodeJsonMap(result),
-        ),
+        _copywriter.confirmedWriteResult(pending: pending, result: decoded),
       );
+      _maybeShowProactiveSuggestion(pending, decoded);
       return;
     }
     _appendAssistantPlaceholder();
@@ -1805,6 +2517,7 @@ class AssistantController extends Notifier<AssistantUiState> {
     );
     _appendAssistantPlaceholder();
     _finishLocalWriteText(message);
+    _maybeShowProactiveSuggestion(pending, decoded);
   }
 
   void _rememberConfirmedTask(
@@ -1830,6 +2543,241 @@ class AssistantController extends Notifier<AssistantUiState> {
       id: id,
       title: title,
       updatedAt: DateTime.now(),
+    );
+  }
+
+  void _maybeShowProactiveSuggestion(
+    AssistantPendingConfirm pending,
+    Map<String, dynamic>? result,
+  ) {
+    if (result?['ok'] != true || pending.toolCall.name != 'create_task') {
+      state = state.copyWith(clearProactiveSuggestion: true);
+      return;
+    }
+
+    final Map<String, dynamic> args = pending.toolCall.argumentsAsMap();
+    final String title =
+        (result?['title'] as Object?)?.toString().trim() ??
+        (args['title'] as Object?)?.toString().trim() ??
+        _rowValueFromPreview(pending.preview, '标题') ??
+        '';
+    if (title.isEmpty) {
+      state = state.copyWith(clearProactiveSuggestion: true);
+      return;
+    }
+
+    final DateTime? date = _parseToolDateValue(args['start_date']);
+    final String dayLabel = date == null ? '这天' : _dateLabel(date);
+    final String reminderKey =
+        (args['reminder_key'] as Object?)?.toString().trim() ?? 'none';
+    final bool hasReminder =
+        reminderKey.isNotEmpty &&
+        reminderKey != 'none' &&
+        reminderKey != TaskReminderKey.none.name;
+    final AssistantProactiveSuggestion? suggestion =
+        _buildCreatedTaskSuggestion(
+          title: title,
+          dayLabel: dayLabel,
+          hasReminder: hasReminder,
+        );
+    state = state.copyWith(
+      proactiveSuggestion: suggestion,
+      clearProactiveSuggestion: suggestion == null,
+    );
+    if (suggestion != null) {
+      final String latest = _latestAssistantPrompt();
+      final String prompt = latest.isEmpty
+          ? suggestion.message
+          : '$latest ${suggestion.message}';
+      _maybeStartVoiceContinuation(
+        prompt,
+        trigger: _VoiceContinuationTrigger.proactiveSuggestion,
+      );
+    }
+  }
+
+  DateTime? _parseToolDateValue(Object? raw) {
+    if (raw == null) {
+      return null;
+    }
+    return DateTime.tryParse(raw.toString().trim().replaceAll('/', '-'));
+  }
+
+  AssistantProactiveSuggestion? _buildCreatedTaskSuggestion({
+    required String title,
+    required String dayLabel,
+    required bool hasReminder,
+  }) {
+    final String normalized = _normalizeTaskText(title);
+    if (_looksLikeTravelSchedule(normalized)) {
+      return _travelSuggestion(
+        title: title,
+        dayLabel: dayLabel,
+        hasReminder: hasReminder,
+      );
+    }
+    if (_looksLikeClientVisitSchedule(normalized)) {
+      return _clientVisitSuggestion(
+        title: title,
+        dayLabel: dayLabel,
+        hasReminder: hasReminder,
+      );
+    }
+    if (_looksLikeMedicalSchedule(normalized)) {
+      return _checklistSuggestion(
+        id: 'medical',
+        title: '还可以继续帮你',
+        message: '这是就医相关安排，要不要我帮你整理证件和材料清单？',
+        actionLabel: '准备清单',
+        prompt: '帮我整理$dayLabel「$title」需要带的证件和材料清单',
+        hasReminder: hasReminder,
+      );
+    }
+    if (_looksLikeInterviewOrExamSchedule(normalized)) {
+      return _checklistSuggestion(
+        id: 'prep',
+        title: '还可以继续帮你',
+        message: '这看起来需要提前准备，要不要我帮你列一份准备清单？',
+        actionLabel: '准备清单',
+        prompt: '帮我整理$dayLabel「$title」的准备清单',
+        hasReminder: hasReminder,
+      );
+    }
+    if (_looksLikeMeetingTitle(title)) {
+      return _meetingSuggestion(
+        title: title,
+        dayLabel: dayLabel,
+        hasReminder: hasReminder,
+      );
+    }
+    return null;
+  }
+
+  AssistantProactiveSuggestion _travelSuggestion({
+    required String title,
+    required String dayLabel,
+    required bool hasReminder,
+  }) {
+    final String? destination = _extractDestinationFromScheduleTitle(title);
+    final List<AssistantProactiveAction> actions = <AssistantProactiveAction>[
+      AssistantProactiveAction(
+        id: 'weather',
+        kind: AssistantProactiveActionKind.weather,
+        label: '查天气',
+        prompt: destination == null
+            ? '查一下$dayLabel出差目的地天气'
+            : '查一下$dayLabel$destination天气',
+      ),
+      AssistantProactiveAction(
+        id: 'trip_plan',
+        kind: AssistantProactiveActionKind.tripPlan,
+        label: '规划行程',
+        prompt: destination == null
+            ? '帮我规划一下$dayLabel「$title」的出差行程'
+            : '帮我规划一下$dayLabel去$destination的出差行程',
+      ),
+      if (!hasReminder) _reminderSuggestionAction(),
+      _dismissSuggestionAction(),
+    ];
+    final String target = destination ?? '目的地';
+    return AssistantProactiveSuggestion(
+      id: 'travel',
+      title: '还可以继续帮你',
+      message: '这是出差安排，要不要我查一下$target$dayLabel的天气，或者做个简单行程规划？',
+      actions: actions,
+    );
+  }
+
+  AssistantProactiveSuggestion _clientVisitSuggestion({
+    required String title,
+    required String dayLabel,
+    required bool hasReminder,
+  }) {
+    return AssistantProactiveSuggestion(
+      id: 'client_visit',
+      title: '还可以继续帮你',
+      message: '这是客户相关安排，要不要我顺手整理一份拜访准备清单？',
+      actions: <AssistantProactiveAction>[
+        AssistantProactiveAction(
+          id: 'checklist',
+          kind: AssistantProactiveActionKind.checklist,
+          label: '准备清单',
+          prompt: '帮我整理$dayLabel「$title」的客户拜访准备清单',
+        ),
+        AssistantProactiveAction(
+          id: 'route',
+          kind: AssistantProactiveActionKind.route,
+          label: '查路线',
+          prompt: '帮我规划$dayLabel去客户现场的路线',
+        ),
+        if (!hasReminder) _reminderSuggestionAction(),
+        _dismissSuggestionAction(),
+      ],
+    );
+  }
+
+  AssistantProactiveSuggestion _meetingSuggestion({
+    required String title,
+    required String dayLabel,
+    required bool hasReminder,
+  }) {
+    return AssistantProactiveSuggestion(
+      id: 'meeting',
+      title: '还可以继续帮你',
+      message: '这是会议安排，要不要我帮你整理一个简短议程？',
+      actions: <AssistantProactiveAction>[
+        AssistantProactiveAction(
+          id: 'agenda',
+          kind: AssistantProactiveActionKind.agenda,
+          label: '整理议程',
+          prompt: '帮我整理$dayLabel「$title」的会议议程',
+        ),
+        if (!hasReminder) _reminderSuggestionAction(),
+        _dismissSuggestionAction(),
+      ],
+    );
+  }
+
+  AssistantProactiveSuggestion _checklistSuggestion({
+    required String id,
+    required String title,
+    required String message,
+    required String actionLabel,
+    required String prompt,
+    required bool hasReminder,
+  }) {
+    return AssistantProactiveSuggestion(
+      id: id,
+      title: title,
+      message: message,
+      actions: <AssistantProactiveAction>[
+        AssistantProactiveAction(
+          id: 'checklist',
+          kind: AssistantProactiveActionKind.checklist,
+          label: actionLabel,
+          prompt: prompt,
+        ),
+        if (!hasReminder) _reminderSuggestionAction(),
+        _dismissSuggestionAction(),
+      ],
+    );
+  }
+
+  AssistantProactiveAction _reminderSuggestionAction() {
+    return const AssistantProactiveAction(
+      id: 'reminder',
+      kind: AssistantProactiveActionKind.reminder,
+      label: '加提醒',
+      prompt: '需要提醒',
+    );
+  }
+
+  AssistantProactiveAction _dismissSuggestionAction() {
+    return const AssistantProactiveAction(
+      id: 'dismiss',
+      kind: AssistantProactiveActionKind.dismiss,
+      label: '不用了',
+      dismissOnly: true,
     );
   }
 
@@ -2023,12 +2971,15 @@ class AssistantController extends Notifier<AssistantUiState> {
     _stopPublicProgressTracking();
     _cancelOpenMicWait();
     _cancelFollowUpWindow();
+    _cancelVoiceContinuation();
     _teardownVoice();
     _lastPublicResponseId = null;
     _lastPublicMode = null;
     _activeLocalIntent = null;
     _lastConfirmedTask = null;
     _pendingTaskChoice = null;
+    _pendingTripPlanningFrame = null;
+    _voiceContinuationAllowedForCurrentTurn = false;
     // sessionMute / pendingWriteDraft / pendingConfirm / completionUndo 都跟随会话生命周期重置。
     state = AssistantUiState.initial().copyWith(
       drawerOpen: state.drawerOpen,
@@ -2092,6 +3043,7 @@ class AssistantController extends Notifier<AssistantUiState> {
     AssistantListeningMode mode = AssistantListeningMode.openMic,
   }) async {
     if (state.stage == AssistantStage.listen) return;
+    _cancelVoiceContinuation();
     final bool hasPendingConfirm = state.pendingConfirm != null;
     await ref.read(xunfeiTtsClientProvider).stop();
     _cancelFollowUpWindow();
@@ -2195,8 +3147,11 @@ class AssistantController extends Notifier<AssistantUiState> {
       }
       state = state.copyWith(listenPartialText: event.text);
     } else if (event is AsrFinalEvent) {
-      final String text = event.text.trim();
-      if (text.isNotEmpty) {
+      final _VoiceCommandText voiceText = _normalizeVoiceCommandText(
+        event.text,
+      );
+      final String text = voiceText.text;
+      if (text.isNotEmpty || voiceText.wakeWordOnly) {
         _markSpeechDetectedInOpenMic();
       }
       _cancelOpenMicWait();
@@ -2206,8 +3161,22 @@ class AssistantController extends Notifier<AssistantUiState> {
         listenPartialText: '',
         listenWindowRemainingMs: 0,
       );
+      if (_autoSendOnFinal && voiceText.wakeWordOnly) {
+        unawaited(
+          startListening(
+            source: _listeningSource,
+            openDrawer: state.drawerOpen,
+            mode: AssistantListeningMode.openMic,
+          ),
+        );
+        return;
+      }
       if (_autoSendOnFinal && text.isNotEmpty) {
-        sendUserMessage(text, source: _listeningSource);
+        sendUserMessage(
+          text,
+          source: _listeningSource,
+          allowVoiceContinuation: true,
+        );
       }
     } else if (event is AsrErrorEvent) {
       _cancelOpenMicWait();
@@ -2291,6 +3260,61 @@ class AssistantController extends Notifier<AssistantUiState> {
       replySurface: AssistantReplySurface.none,
       clearCompactReply: true,
     );
+  }
+
+  Future<void> submitProactiveSuggestionAction(String actionId) async {
+    final AssistantProactiveSuggestion? suggestion = state.proactiveSuggestion;
+    if (suggestion == null) {
+      return;
+    }
+    AssistantProactiveAction? selected;
+    for (final AssistantProactiveAction action in suggestion.actions) {
+      if (action.id == actionId) {
+        selected = action;
+        break;
+      }
+    }
+    if (selected == null) {
+      return;
+    }
+    state = state.copyWith(clearProactiveSuggestion: true);
+    if (selected.dismissOnly) {
+      return;
+    }
+    final String prompt = selected.prompt?.trim() ?? '';
+    if (prompt.isEmpty) {
+      return;
+    }
+    await sendUserMessage(prompt, source: AssistantEntrySource.drawerText);
+  }
+
+  void dismissProactiveSuggestion() {
+    if (state.proactiveSuggestion == null) {
+      return;
+    }
+    state = state.copyWith(clearProactiveSuggestion: true);
+  }
+
+  AssistantProactiveAction? _matchProactiveSuggestionAction(
+    AssistantProactiveSuggestion suggestion,
+    String text,
+  ) {
+    final String normalized = _compactVoiceText(text);
+    if (normalized.isEmpty) {
+      return null;
+    }
+    for (final AssistantProactiveAction action in suggestion.actions) {
+      final String label = _compactVoiceText(action.label);
+      if (normalized == label ||
+          normalized == '帮我$label' ||
+          normalized == '需要$label' ||
+          normalized == '要$label' ||
+          (normalized.endsWith(label) &&
+              normalized.length <= label.length + 4)) {
+        return action;
+      }
+    }
+    return null;
   }
 
   void _setProgressStatus(String status) {
@@ -2378,7 +3402,11 @@ class AssistantController extends Notifier<AssistantUiState> {
     }
   }
 
-  void _finishAssistantTurn(String content) {
+  void _finishAssistantTurn(
+    String content, {
+    _VoiceContinuationTrigger voiceContinuation =
+        _VoiceContinuationTrigger.none,
+  }) {
     final AssistantDisplayContent displayContent = parseAssistantDisplayContent(
       content,
     );
@@ -2418,6 +3446,16 @@ class AssistantController extends Notifier<AssistantUiState> {
       mode: mode,
       sessionMute: state.sessionMute,
     );
+
+    if (voiceContinuation != _VoiceContinuationTrigger.none) {
+      if (_maybeStartVoiceContinuation(
+        finalContent,
+        trigger: voiceContinuation,
+      )) {
+        return;
+      }
+    }
+
     if (!shouldSpeak) return;
 
     if (surface == AssistantReplySurface.compactCard) {
@@ -2493,6 +3531,109 @@ class AssistantController extends Notifier<AssistantUiState> {
     _asrClient = null;
     _recorder?.dispose();
     _recorder = null;
+  }
+
+  bool _maybeStartVoiceContinuation(
+    String prompt, {
+    required _VoiceContinuationTrigger trigger,
+  }) {
+    if (trigger == _VoiceContinuationTrigger.none ||
+        !_shouldAutoContinueListeningFromVoice()) {
+      return false;
+    }
+    final int generation = ++_voiceContinuationGeneration;
+    unawaited(
+      _speakPromptThenContinueListening(
+        prompt,
+        trigger: trigger,
+        generation: generation,
+      ),
+    );
+    return true;
+  }
+
+  bool _shouldAutoContinueListeningFromVoice() {
+    return _voiceContinuationAllowedForCurrentTurn &&
+        (_lastEntrySource == AssistantEntrySource.drawerVoice ||
+            _lastEntrySource == AssistantEntrySource.quickVoice);
+  }
+
+  Future<void> _speakPromptThenContinueListening(
+    String prompt, {
+    required _VoiceContinuationTrigger trigger,
+    required int generation,
+  }) async {
+    final String speakText = _buildSpeechText(prompt);
+    final TtsPlaybackMode mode = ref.read(currentTtsPlaybackModeProvider);
+    final bool shouldSpeak = decideAutoSpeak(
+      entrySource: _lastEntrySource,
+      surface: AssistantReplySurface.drawer,
+      mode: mode,
+      sessionMute: state.sessionMute,
+    );
+    if (shouldSpeak && speakText.isNotEmpty) {
+      final XunfeiTtsClient tts = ref.read(xunfeiTtsClientProvider);
+      final String voice = ref.read(currentTtsVoiceProvider);
+      final double rate = ref.read(currentTtsSpeedProvider);
+      try {
+        await tts.speakAndWaitComplete(
+          speakText,
+          voice: voice,
+          xunfeiSpeed: xunfeiSpeedForRate(rate),
+        );
+      } catch (err) {
+        if (err is XunfeiTtsException && err.message == '被中断') {
+          return;
+        }
+        state = state.copyWith(ttsError: 'TTS 播报失败：$err');
+      }
+    }
+    if (generation != _voiceContinuationGeneration ||
+        !_shouldStillAwaitVoiceContinuation(trigger)) {
+      return;
+    }
+    await startListening(
+      source: _lastEntrySource,
+      openDrawer: state.drawerOpen || state.pendingConfirm != null,
+      mode: AssistantListeningMode.openMic,
+    );
+  }
+
+  bool _shouldStillAwaitVoiceContinuation(_VoiceContinuationTrigger trigger) {
+    if (state.stage == AssistantStage.listen ||
+        state.stage == AssistantStage.think ||
+        state.stage == AssistantStage.answer) {
+      return false;
+    }
+    switch (trigger) {
+      case _VoiceContinuationTrigger.none:
+        return false;
+      case _VoiceContinuationTrigger.confirm:
+        return state.pendingConfirm != null;
+      case _VoiceContinuationTrigger.missingWriteSlots:
+        return state.pendingWriteDraft != null;
+      case _VoiceContinuationTrigger.pendingTaskChoice:
+        return _pendingTaskChoice?.isFresh == true;
+      case _VoiceContinuationTrigger.tripPlanning:
+        return _pendingTripPlanningFrame != null;
+      case _VoiceContinuationTrigger.proactiveSuggestion:
+        return state.proactiveSuggestion != null &&
+            state.pendingConfirm == null;
+    }
+  }
+
+  void _cancelVoiceContinuation() {
+    _voiceContinuationGeneration += 1;
+  }
+
+  String _latestAssistantPrompt({String fallback = ''}) {
+    for (final AssistantMessage message in state.messages.reversed) {
+      if (message.role == AssistantRole.assistant &&
+          message.content.trim().isNotEmpty) {
+        return message.content.trim();
+      }
+    }
+    return fallback.trim();
   }
 
   void _startOpenMicWait() {
@@ -2815,9 +3956,9 @@ String _timeLabel(int minutes) {
     period = '晚上';
     displayHour = hour - 12;
   }
-  if (minute == 0) return '$period$displayHour 点';
-  if (minute == 30) return '$period$displayHour 点半';
-  return '$period$displayHour 点 $minute 分';
+  if (minute == 0) return '$period $displayHour 点';
+  if (minute == 30) return '$period $displayHour 点半';
+  return '$period $displayHour 点 $minute 分';
 }
 
 TaskReminderKey? _parseReminderFollowUp(String text) {
@@ -2907,6 +4048,48 @@ bool _looksLikeChoiceReply(String text) {
   return RegExp(
     r'^(第?[一二两三四五六七八九十\d]+条|第?[一二两三四五六七八九十\d]+个|选第?[一二两三四五六七八九十\d]+|就第?[一二两三四五六七八九十\d]+|前一个|后一个)$',
   ).hasMatch(normalized);
+}
+
+bool _isProactiveSuggestionDismissInput(String text) {
+  return _isCancelOrCloseInput(text);
+}
+
+bool _isCancelOrCloseInput(String text) {
+  final String normalized = text.trim().replaceAll(RegExp(r'[，。！？,.!?\s]'), '');
+  return _cancelInputPattern.hasMatch(normalized) ||
+      _conversationCloseInputPattern.hasMatch(normalized);
+}
+
+bool _isConversationCloseInput(String text) {
+  final String normalized = text.trim().replaceAll(RegExp(r'[，。！？,.!?\s]'), '');
+  return _conversationCloseInputPattern.hasMatch(normalized);
+}
+
+_VoiceCommandText _normalizeVoiceCommandText(String raw) {
+  String text = raw.trim();
+  if (text.isEmpty) {
+    return const _VoiceCommandText('');
+  }
+  final String compact = _compactVoiceText(text);
+  if (_wakeWordOnlyPattern.hasMatch(compact)) {
+    return const _VoiceCommandText('', wakeWordOnly: true);
+  }
+  while (true) {
+    final RegExpMatch? match = _leadingWakeWordPattern.firstMatch(text);
+    if (match == null || match.start != 0) {
+      break;
+    }
+    text = text.substring(match.end).trimLeft();
+  }
+  text = text.replaceFirst(RegExp(r'^[，。！？,.!?\s]+'), '').trim();
+  if (text.isEmpty && _wakeWordOnlyPattern.hasMatch(compact)) {
+    return const _VoiceCommandText('', wakeWordOnly: true);
+  }
+  return _VoiceCommandText(text);
+}
+
+String _compactVoiceText(String text) {
+  return text.replaceAll(RegExp(r'[，。！？,.!?\s]+'), '');
 }
 
 int? _parseChoiceIndex(String text) {
@@ -3009,6 +4192,55 @@ bool _looksLikeMeetingTitle(String text) {
       normalized.contains('汇报');
 }
 
+bool _looksLikeTravelSchedule(String text) {
+  return RegExp(r'(出差|差旅|高铁|火车|飞机|航班|机场|车站)').hasMatch(text) ||
+      RegExp(r'(去|到|前往|飞往).{1,12}(出差|开会|培训|面试)').hasMatch(text);
+}
+
+bool _looksLikeClientVisitSchedule(String text) {
+  return RegExp(r'(客户|客户现场|拜访|对接|商务沟通|商务交流)').hasMatch(text);
+}
+
+bool _looksLikeMedicalSchedule(String text) {
+  return RegExp(r'(医院|体检|看病|复诊|门诊|挂号|就诊)').hasMatch(text);
+}
+
+bool _looksLikeInterviewOrExamSchedule(String text) {
+  return RegExp(r'(面试|考试|笔试|培训|答辩|路演)').hasMatch(text);
+}
+
+String? _extractDestinationFromScheduleTitle(String title) {
+  final String compact = title.replaceAll(RegExp(r'[，。！？,.!?\s]'), '');
+  final RegExpMatch? withVerb = RegExp(
+    r'(?:出差去|前往|去|到|飞往|飞)([\u4e00-\u9fa5A-Za-z]{2,12}?)(?:出差|开会|拜访|客户|现场|培训|$)',
+  ).firstMatch(compact);
+  if (withVerb != null) {
+    return _cleanDestinationName(withVerb.group(1));
+  }
+  final RegExpMatch? beforeTravel = RegExp(
+    r'([\u4e00-\u9fa5A-Za-z]{2,12}?)(?:出差|差旅)',
+  ).firstMatch(compact);
+  if (beforeTravel != null) {
+    return _cleanDestinationName(beforeTravel.group(1));
+  }
+  return null;
+}
+
+String? _cleanDestinationName(String? raw) {
+  if (raw == null) {
+    return null;
+  }
+  String value = raw.trim();
+  value = value
+      .replaceAll(RegExp(r'^(去|到|飞|前往|出差去)'), '')
+      .replaceAll(RegExp(r'(的|现场|客户)$'), '')
+      .trim();
+  if (value.length < 2 || _titleStopWords.contains(value)) {
+    return null;
+  }
+  return value;
+}
+
 int _resolveNewTimeMinutes(_TimeMention newTime, int? oldStartMinutes) {
   if (oldStartMinutes == null ||
       newTime.period.isNotEmpty ||
@@ -3049,6 +4281,22 @@ final RegExp _confirmInputPattern = RegExp(
 );
 final RegExp _cancelInputPattern = RegExp(
   r'^(取消|不用|不用了|算了|先不|先不用|不要|别|撤销|放弃)$',
+);
+final RegExp _conversationCloseInputPattern = RegExp(
+  r'^(好了|好啦|好了就这样|好了就这样吧|好啦就这样|好啦就这样吧|就这样|就这样吧|先这样|先这样吧|没事了|结束|可以了)$',
+);
+final RegExp _wakeWordOnlyPattern = RegExp(r'^(小治小治|小智小智|小治|小智)+$');
+final RegExp _leadingWakeWordPattern = RegExp(
+  r'^(?:小治小治|小智小智|小治|小智)[，。！？,.!?\s]*',
+);
+final RegExp _tripPlanningCancelPattern = RegExp(
+  r'^(不规划了|不用规划了|先不规划|别规划了|不查了|不用查了|先不查|别查了|'
+  r'路线先不用|先不用路线|不用路线了|不用查路线|别查路线)$',
+);
+final RegExp _tripPlanningControlReplyPattern = RegExp(
+  r'^(取消|不用|不用了|算了|先不|先不用|不要|别|撤销|放弃|'
+  r'不规划了|不用规划了|先不规划|别规划了|不查了|不用查了|先不查|别查了|'
+  r'路线先不用|先不用路线|不用路线了|不用查路线|别查路线)$',
 );
 final RegExp _nonCreateWritePattern = RegExp(
   r'(修改|调整|推迟|提前|删除|删掉|取消|完成|标记|改到|改成|挪到)',
@@ -3105,6 +4353,97 @@ final RegExp _explicitQuestionPattern = RegExp(
 final RegExp _publicInterruptionPattern = RegExp(
   r'(天气|气温|下雨|新闻|汇率|股价|价格|附近|路线|酒店|餐厅|搜索)',
 );
+final RegExp _routePlanningFramePattern = RegExp(
+  r'(路线规划|规划.{0,12}路线|导航|怎么去|怎么走|怎么过去|'
+  r'从.{1,18}到.{1,18}|(?:去|到|前往).{1,18}(?:路线|导航|怎么走|怎么去)|'
+  r'开车|驾车|自驾|打车|地铁|公交|公共交通|坐车|步行|骑车)',
+);
+final RegExp _resumeTripPlanningPattern = RegExp(
+  r'^(继续|接着|刚才|上一条)$|(?:继续|接着|刚才|上一条).{0,8}(路线|行程)',
+);
+
+const Duration _tripPlanningFrameTtl = Duration(minutes: 10);
+const int _tripPlanningFrameMaxFollowUps = 4;
+
+bool _isGenericTripDestination(String? value) {
+  if (value == null) {
+    return true;
+  }
+  final String compact = value.replaceAll(RegExp(r'[，。！？,.!?\s]+'), '');
+  return compact.isEmpty ||
+      compact == '目的地' ||
+      compact == '客户现场' ||
+      compact == '客户那里' ||
+      compact == '公司' ||
+      compact == '那里';
+}
+
+class _TripPlanningFrame {
+  _TripPlanningFrame({
+    this.date,
+    this.origin,
+    this.destination,
+    this.duration,
+    this.transport,
+    this.destinationHint,
+    int? createdAtMillis,
+    this.followUpTurns = 0,
+  }) : createdAtMillis =
+           createdAtMillis ?? DateTime.now().millisecondsSinceEpoch;
+
+  final String? date;
+  final String? origin;
+  final String? destination;
+  final String? duration;
+  final String? transport;
+  final String? destinationHint;
+  final int createdAtMillis;
+  final int followUpTurns;
+
+  bool get needsDestination => _isGenericTripDestination(destination);
+
+  bool get isReady =>
+      origin != null &&
+      origin!.trim().isNotEmpty &&
+      !needsDestination &&
+      transport != null &&
+      transport!.trim().isNotEmpty;
+
+  _TripPlanningFrame copyWith({
+    String? date,
+    String? origin,
+    String? destination,
+    String? duration,
+    String? transport,
+    String? destinationHint,
+    int? createdAtMillis,
+    int? followUpTurns,
+  }) {
+    return _TripPlanningFrame(
+      date: date ?? this.date,
+      origin: origin ?? this.origin,
+      destination: destination ?? this.destination,
+      duration: duration ?? this.duration,
+      transport: transport ?? this.transport,
+      destinationHint: destinationHint ?? this.destinationHint,
+      createdAtMillis: createdAtMillis,
+      followUpTurns: followUpTurns ?? this.followUpTurns,
+    );
+  }
+
+  _TripPlanningFrame nextFollowUpTurn() {
+    return copyWith(followUpTurns: followUpTurns + 1);
+  }
+
+  bool sameSlotsAs(_TripPlanningFrame other) {
+    return date == other.date &&
+        origin == other.origin &&
+        destination == other.destination &&
+        duration == other.duration &&
+        transport == other.transport &&
+        destinationHint == other.destinationHint;
+  }
+}
 
 class _TimeMention {
   const _TimeMention({
@@ -3199,31 +4538,37 @@ class _PendingTaskChoice {
   _PendingTaskChoice._({
     required this.kind,
     required this.candidates,
+    required this.date,
     this.newTime,
   }) : createdAt = DateTime.now();
 
   factory _PendingTaskChoice.updateTime({
     required List<_TaskCommandCandidate> candidates,
     required _TimeMention newTime,
+    required DateTime date,
   }) {
     return _PendingTaskChoice._(
       kind: _PendingTaskChoiceKind.updateTime,
       candidates: candidates,
+      date: date,
       newTime: newTime,
     );
   }
 
   factory _PendingTaskChoice.delete({
     required List<_TaskCommandCandidate> candidates,
+    required DateTime date,
   }) {
     return _PendingTaskChoice._(
       kind: _PendingTaskChoiceKind.delete,
       candidates: candidates,
+      date: date,
     );
   }
 
   final _PendingTaskChoiceKind kind;
   final List<_TaskCommandCandidate> candidates;
+  final DateTime date;
   final _TimeMention? newTime;
   final DateTime createdAt;
 
@@ -3244,6 +4589,13 @@ class _RecentConfirmedTask {
 
   bool get isFresh =>
       DateTime.now().difference(updatedAt) <= _kRecentWriteContextWindow;
+}
+
+class _VoiceCommandText {
+  const _VoiceCommandText(this.text, {this.wakeWordOnly = false});
+
+  final String text;
+  final bool wakeWordOnly;
 }
 
 final NotifierProvider<AssistantController, AssistantUiState>
@@ -3303,13 +4655,13 @@ String _labelForToolCall(String name) {
     case 'get_user_location':
       return '正在获取当前位置';
     case 'query_tasks':
-      return '正在查本地任务';
+      return '正在看你的日程';
     case 'create_task':
-      return '正在准备创建任务';
+      return '正在整理日程';
     case 'update_task':
-      return '正在准备修改任务';
+      return '正在准备调整日程';
     case 'delete_task':
-      return '正在准备删除任务';
+      return '正在准备删除日程';
     case 'complete_task':
       return '正在标记完成';
   }

@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../app/theme.dart';
+import '../../../core/config/env_config.dart';
+import '../../../core/voice/voice_wakeup_service.dart';
 import '../../assistant/data/xunfei_tts_client.dart';
 import '../application/about_info_provider.dart';
 import '../application/app_settings_controller.dart';
@@ -169,6 +171,12 @@ class SettingsPage extends ConsumerWidget {
                   ),
                   const SizedBox(height: 16),
                   _SettingsCard(
+                    title: '语音唤醒',
+                    subtitle: '查看“小治小治”离线唤醒是否已经具备运行条件。',
+                    child: const _VoiceWakeupStatusTile(),
+                  ),
+                  const SizedBox(height: 16),
+                  _SettingsCard(
                     title: '能力边界',
                     subtitle: '把一期与后续阶段的边界写清楚，避免误解。',
                     child: Column(
@@ -228,6 +236,73 @@ class SettingsPage extends ConsumerWidget {
         ],
       ),
     );
+  }
+}
+
+final AutoDisposeFutureProvider<VoiceWakeupStatus> _voiceWakeupStatusProvider =
+    FutureProvider.autoDispose<VoiceWakeupStatus>((Ref ref) {
+      return ref.read(voiceWakeupServiceProvider).getStatus();
+    });
+
+class _VoiceWakeupStatusTile extends ConsumerWidget {
+  const _VoiceWakeupStatusTile();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final EnvConfig env = ref.watch(envConfigProvider);
+    final AsyncValue<VoiceWakeupStatus> statusAsync = ref.watch(
+      _voiceWakeupStatusProvider,
+    );
+
+    return ListTile(
+      leading: const Icon(Icons.record_voice_over_outlined),
+      title: const Text(
+        '“小治小治”语音唤醒',
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+      ),
+      subtitle: statusAsync.when(
+        data: (VoiceWakeupStatus status) => Text(
+          _wakeStatusText(status, env),
+          maxLines: 2,
+          overflow: TextOverflow.ellipsis,
+        ),
+        loading: () => const Text(
+          '正在检查本机唤醒组件状态',
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+        ),
+        error: (_, _) => const Text(
+          '状态读取失败，点击语音入口不受影响',
+          maxLines: 2,
+          overflow: TextOverflow.ellipsis,
+        ),
+      ),
+      trailing: IconButton(
+        tooltip: '刷新状态',
+        onPressed: () => ref.invalidate(_voiceWakeupStatusProvider),
+        icon: const Icon(Icons.refresh_rounded),
+      ),
+    );
+  }
+
+  String _wakeStatusText(VoiceWakeupStatus status, EnvConfig env) {
+    if (!status.supported) {
+      return '当前平台暂不支持离线唤醒';
+    }
+    if (!env.hasXunfeiCredentials) {
+      return '未配置讯飞凭据，点击语音仍可按原逻辑使用';
+    }
+    if (!status.sdkPresent) {
+      return '缺少 AIKit.aar，已保持关闭，不影响点击语音';
+    }
+    if (!status.resourceReady) {
+      return '缺少唤醒资源 aikit_resources/，已保持关闭';
+    }
+    if (status.running) {
+      return '已在等待唤醒，说“小治小治”即可开始';
+    }
+    return '组件已就绪，重启 App 后会自动开启';
   }
 }
 
@@ -430,15 +505,14 @@ class _TtsPlaybackModeSection extends ConsumerWidget {
           ),
           items: TtsPlaybackMode.values
               .map(
-                (TtsPlaybackMode option) =>
-                    DropdownMenuItem<TtsPlaybackMode>(
-                      value: option,
-                      child: Text(
-                        '${option.label} · ${option.description}',
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                    ),
+                (TtsPlaybackMode option) => DropdownMenuItem<TtsPlaybackMode>(
+                  value: option,
+                  child: Text(
+                    '${option.label} · ${option.description}',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
               )
               .toList(),
           onChanged: (TtsPlaybackMode? value) {
@@ -505,9 +579,7 @@ class _TtsSpeedSection extends ConsumerWidget {
               .toList(),
           onChanged: (double? value) {
             if (value == null || value == speed) return;
-            ref
-                .read(appSettingsControllerProvider.notifier)
-                .setTtsSpeed(value);
+            ref.read(appSettingsControllerProvider.notifier).setTtsSpeed(value);
           },
         ),
       ],
