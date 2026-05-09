@@ -5,6 +5,7 @@ import 'cards/assistant_card_registry.dart';
 export 'cards/weather_card.dart'
     show WeatherCard, AssistantResultMetric, AssistantResultTimelinePoint;
 export 'cards/exchange_rate_card.dart' show ExchangeRateCard;
+export 'cards/world_clock_card.dart' show WorldClockCard, WorldClockEntry;
 
 abstract class AssistantResultCard {
   const AssistantResultCard();

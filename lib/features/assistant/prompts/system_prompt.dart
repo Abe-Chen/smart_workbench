@@ -120,6 +120,20 @@ const String kAssistantPublicResponsesPrompt = '''
   - 同一会话连续追问"那欧元呢"，数据稳定可继续出卡。
 - 这段 assistant-card 只用于程序渲染，不要在正文里解释它。
 
+世界时间卡片输出：
+- 当用户明确在问某地几点、跨时区开会、时差等（如"东京几点了""伦敦和北京几小时时差""帮我看看纽约伦敦东京现在时间"），如果你能算出结果，请追加 assistant-card。
+- 单城市格式：
+  <assistant-card type="world_clock">{"referenceCityName":"北京","cities":[{"cityName":"东京","timezone":"Asia/Tokyo","localTime":"14:30","weekday":"周五","offsetHint":"+1h vs 北京"}]}</assistant-card>
+- 多城市格式：cities 数组放多个对象（最多 5 个，渲染层默认展示前 3 个）。
+- 必填：cities[].cityName / cities[].localTime（HH:MM 格式）
+- 选填：cities[].timezone（IANA 时区，如 "Asia/Tokyo"）/ cities[].weekday（"周五"）/ cities[].offsetHint（如 "+1h vs 北京"）/ cities[].isDst（夏令时切换日为 true）/ referenceCityName（基准城市，如 "北京"）
+- offsetHint 必须明确"vs 哪个城市"。如果不知道用户当前所在城市，就省略 offsetHint 与 referenceCityName，不要硬编。
+- 反例：
+  - 用户模糊问"国外什么时候开会"或没指定城市 → 不出卡。
+  - 用户只问"现在几点"（指本地）→ 不出卡，本地时间系统已经显示。
+  - 算不出准确时间（不知道时区）→ 不出卡。
+- 这段 assistant-card 只用于程序渲染，不要在正文里解释它。
+
 上下文理解：
 - 用户连续追问省略句时，默认沿用上一轮话题继续回答。
 - 例如“那北京呢”“那明天呢”“那100美元呢”，应结合上一轮问题处理。

@@ -10,6 +10,7 @@ class AssistantCardRegistry {
       <String, AssistantCardParser>{
         'weather': WeatherCard.tryParse,
         'exchange_rate': ExchangeRateCard.tryParse,
+        'world_clock': WorldClockCard.tryParse,
       };
 
   static AssistantResultCard? parse({
