@@ -1,8 +1,8 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:typed_data';
 
 import 'package:dio/dio.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/database/database_providers.dart';
@@ -10,6 +10,7 @@ import '../../../core/identity/device_id.dart';
 import '../../../core/location/location_repository.dart';
 import '../../../core/utils/calendar_utils.dart';
 import '../../../core/voice/pcm_stream_recorder.dart';
+import '../../../core/voice/voice_providers.dart';
 import '../../task/application/task_providers.dart';
 import '../../task/domain/task.dart';
 import '../data/doubao_chat_client.dart';
@@ -34,10 +35,53 @@ import 'assistant_state.dart';
 import 'tool_registry.dart';
 
 const int _kMaxToolRounds = 4;
-const Duration _kOpenMicWait = Duration(seconds: 8);
 const Duration _kFollowUpWindow = Duration(seconds: 5);
 const Duration _kCompletionUndoWindow = Duration(seconds: 5);
 const Duration _kRecentWriteContextWindow = Duration(minutes: 5);
+
+/// 本地音频能量探测阈值（PCM16 RMS 归一化值）。
+/// 0.025 ≈ -32 dBFS，室内正常说话起步音量。
+const double _kSpeechRmsThreshold = 0.025;
+/// 连续 ≥ 此帧数（每帧 40ms）能量超阈值，才判定"用户开口"。
+/// 防抖：避免一次环境噪声尖峰误触发。
+const int _kSpeechHoldFrames = 2;
+/// 长按持续录音模式下用更宽松的 vad_eos，避免用户停顿想词被讯飞截断。
+const int _kPressToTalkVadEosMs = 8000;
+
+/// 不同对话上下文下的开麦等待时长 + 讯飞 vad_eos。
+/// 详见 docs/voice_endpointing_strategy.md。
+class _ListenTiming {
+  const _ListenTiming({required this.openMicWait, required this.vadEosMs});
+  final Duration openMicWait;
+  final int vadEosMs;
+}
+
+_ListenTiming _listenTimingFor(_VoiceContinuationTrigger trigger) {
+  switch (trigger) {
+    case _VoiceContinuationTrigger.missingWriteSlots:
+    case _VoiceContinuationTrigger.tripPlanning:
+      return const _ListenTiming(
+        openMicWait: Duration(seconds: 18),
+        vadEosMs: 5000,
+      );
+    case _VoiceContinuationTrigger.confirm:
+    case _VoiceContinuationTrigger.pendingTaskChoice:
+      return const _ListenTiming(
+        openMicWait: Duration(seconds: 10),
+        vadEosMs: 2500,
+      );
+    case _VoiceContinuationTrigger.proactiveSuggestion:
+      return const _ListenTiming(
+        openMicWait: Duration(seconds: 12),
+        vadEosMs: 3000,
+      );
+    case _VoiceContinuationTrigger.none:
+      return const _ListenTiming(
+        openMicWait: Duration(seconds: 12),
+        vadEosMs: 2800,
+      );
+  }
+}
 
 enum AssistantEntrySource { drawerText, drawerVoice, quickVoice }
 
@@ -80,6 +124,11 @@ class AssistantController extends Notifier<AssistantUiState> {
   Timer? _openMicTimeoutTimer;
   Timer? _openMicTicker;
   bool _heardSpeechInCurrentOpenMic = false;
+  ValueListenable<double>? _audioLevelListenable;
+  VoidCallback? _audioLevelListener;
+  int _consecutiveLoudFrames = 0;
+  _VoiceContinuationTrigger _nextStartListeningTrigger =
+      _VoiceContinuationTrigger.none;
   Timer? _followUpExpireTimer;
   Timer? _followUpTicker;
   int _voiceContinuationGeneration = 0;
@@ -3042,6 +3091,8 @@ class AssistantController extends Notifier<AssistantUiState> {
     bool openDrawer = true,
     AssistantListeningMode mode = AssistantListeningMode.openMic,
   }) async {
+    final _VoiceContinuationTrigger trigger = _nextStartListeningTrigger;
+    _nextStartListeningTrigger = _VoiceContinuationTrigger.none;
     if (state.stage == AssistantStage.listen) return;
     _cancelVoiceContinuation();
     final bool hasPendingConfirm = state.pendingConfirm != null;
@@ -3061,6 +3112,11 @@ class AssistantController extends Notifier<AssistantUiState> {
       clearProgress: true,
     );
 
+    final _ListenTiming timing = _listenTimingFor(trigger);
+    final int vadEosMs = mode == AssistantListeningMode.pressToTalk
+        ? _kPressToTalkVadEosMs
+        : timing.vadEosMs;
+
     final PcmStreamRecorder recorder = ref.read(
       pcmStreamRecorderFactoryProvider,
     )();
@@ -3076,7 +3132,9 @@ class AssistantController extends Notifier<AssistantUiState> {
       return;
     }
 
-    final XunfeiAsrClient client = ref.read(xunfeiAsrClientFactoryProvider)();
+    final XunfeiAsrClient client = ref.read(xunfeiAsrClientFactoryProvider)(
+      vadEosMs: vadEosMs,
+    );
     _asrClient = client;
     _autoSendOnFinal = true;
 
@@ -3101,8 +3159,9 @@ class AssistantController extends Notifier<AssistantUiState> {
           state = state.copyWith(listenError: '录音异常：$err');
         },
       );
+      _attachAudioLevelListener(recorder);
       if (mode == AssistantListeningMode.openMic) {
-        _startOpenMicWait();
+        _startOpenMicWait(timing.openMicWait);
       }
     } catch (e) {
       state = state.copyWith(
@@ -3110,6 +3169,50 @@ class AssistantController extends Notifier<AssistantUiState> {
         listenError: '录音启动失败：$e',
       );
       _teardownVoice();
+    }
+  }
+
+  /// 把 recorder 的本地音频能量转发到全局 ValueNotifier（供 UI 动画订阅）；
+  /// 同时做"用户开口"端点检测：连续 ≥ [_kSpeechHoldFrames] 帧 RMS ≥ [_kSpeechRmsThreshold]
+  /// 即触发 [_markSpeechDetectedInOpenMic]，与 ASR partial 双轨并行，谁先到算谁。
+  void _attachAudioLevelListener(PcmStreamRecorder recorder) {
+    _detachAudioLevelListener();
+    _consecutiveLoudFrames = 0;
+    final ValueListenable<double> listenable = recorder.audioLevel;
+    final ValueNotifier<double> publish = ref.read(liveAudioLevelProvider);
+    void onLevel() {
+      final double level = listenable.value;
+      publish.value = level;
+      if (state.listeningMode != AssistantListeningMode.openMic ||
+          _heardSpeechInCurrentOpenMic) {
+        return;
+      }
+      if (level >= _kSpeechRmsThreshold) {
+        _consecutiveLoudFrames += 1;
+        if (_consecutiveLoudFrames >= _kSpeechHoldFrames) {
+          _markSpeechDetectedInOpenMic();
+        }
+      } else {
+        _consecutiveLoudFrames = 0;
+      }
+    }
+    listenable.addListener(onLevel);
+    _audioLevelListenable = listenable;
+    _audioLevelListener = onLevel;
+  }
+
+  void _detachAudioLevelListener() {
+    if (_audioLevelListenable != null && _audioLevelListener != null) {
+      _audioLevelListenable!.removeListener(_audioLevelListener!);
+    }
+    _audioLevelListenable = null;
+    _audioLevelListener = null;
+    _consecutiveLoudFrames = 0;
+    try {
+      ref.read(liveAudioLevelProvider).value = 0.0;
+    } catch (_) {
+      // container 销毁中（_teardownVoice 经 onDispose 触发时）read 会抛，
+      // 此场景归零无意义，安全忽略。
     }
   }
 
@@ -3523,6 +3626,7 @@ class AssistantController extends Notifier<AssistantUiState> {
 
   void _teardownVoice() {
     _cancelOpenMicWait();
+    _detachAudioLevelListener();
     _recorderSub?.cancel();
     _recorderSub = null;
     _asrSub?.cancel();
@@ -3592,6 +3696,7 @@ class AssistantController extends Notifier<AssistantUiState> {
         !_shouldStillAwaitVoiceContinuation(trigger)) {
       return;
     }
+    _nextStartListeningTrigger = trigger;
     await startListening(
       source: _lastEntrySource,
       openDrawer: state.drawerOpen || state.pendingConfirm != null,
@@ -3636,12 +3741,11 @@ class AssistantController extends Notifier<AssistantUiState> {
     return fallback.trim();
   }
 
-  void _startOpenMicWait() {
+  void _startOpenMicWait(Duration wait) {
     _cancelOpenMicWait();
     _heardSpeechInCurrentOpenMic = false;
-    state = state.copyWith(
-      listenWindowRemainingMs: _kOpenMicWait.inMilliseconds,
-    );
+    final int totalMs = wait.inMilliseconds;
+    state = state.copyWith(listenWindowRemainingMs: totalMs);
     _openMicTicker = Timer.periodic(const Duration(milliseconds: 200), (_) {
       if (state.stage != AssistantStage.listen ||
           state.listeningMode != AssistantListeningMode.openMic ||
@@ -3653,10 +3757,10 @@ class AssistantController extends Notifier<AssistantUiState> {
           state.listenWindowRemainingMs -
           const Duration(milliseconds: 200).inMilliseconds;
       state = state.copyWith(
-        listenWindowRemainingMs: nextMs.clamp(0, _kOpenMicWait.inMilliseconds),
+        listenWindowRemainingMs: nextMs.clamp(0, totalMs),
       );
     });
-    _openMicTimeoutTimer = Timer(_kOpenMicWait, () async {
+    _openMicTimeoutTimer = Timer(wait, () async {
       if (state.stage != AssistantStage.listen ||
           state.listeningMode != AssistantListeningMode.openMic ||
           _heardSpeechInCurrentOpenMic) {

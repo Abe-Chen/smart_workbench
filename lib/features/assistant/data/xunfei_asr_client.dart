@@ -37,9 +37,12 @@ class AsrErrorEvent extends AsrEvent {
 ///   await c.stop();       // 推 end frame，等 final
 ///   c.dispose();          // 拆连接
 class XunfeiAsrClient {
-  XunfeiAsrClient({required EnvConfig env}) : _env = env;
+  XunfeiAsrClient({required EnvConfig env, int vadEosMs = 2000})
+      : _env = env,
+        _vadEosMs = vadEosMs.clamp(1000, 10000);
 
   final EnvConfig _env;
+  final int _vadEosMs;
   WebSocketChannel? _ws;
   StreamSubscription<dynamic>? _wsSub;
   final StreamController<AsrEvent> _eventCtrl =
@@ -96,7 +99,7 @@ class XunfeiAsrClient {
               'language': 'zh_cn',
               'domain': 'iat',
               'accent': 'mandarin',
-              'vad_eos': 2000,
+              'vad_eos': _vadEosMs,
               'dwa': 'wpgs',
             },
             'data': <String, dynamic>{
@@ -207,8 +210,11 @@ class XunfeiAsrClient {
   }
 }
 
-final Provider<XunfeiAsrClient Function()> xunfeiAsrClientFactoryProvider =
-    Provider<XunfeiAsrClient Function()>((Ref ref) {
+typedef XunfeiAsrClientFactory = XunfeiAsrClient Function({int vadEosMs});
+
+final Provider<XunfeiAsrClientFactory> xunfeiAsrClientFactoryProvider =
+    Provider<XunfeiAsrClientFactory>((Ref ref) {
       final EnvConfig env = ref.watch(envConfigProvider);
-      return () => XunfeiAsrClient(env: env);
+      return ({int vadEosMs = 2000}) =>
+          XunfeiAsrClient(env: env, vadEosMs: vadEosMs);
     });

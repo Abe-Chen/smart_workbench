@@ -1,8 +1,8 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:typed_data';
 
 import 'package:dio/dio.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -1164,7 +1164,9 @@ void main() {
           ),
           xunfeiTtsClientProvider.overrideWithValue(tts),
           pcmStreamRecorderFactoryProvider.overrideWithValue(() => recorder),
-          xunfeiAsrClientFactoryProvider.overrideWithValue(() => asr),
+          xunfeiAsrClientFactoryProvider.overrideWithValue(
+            ({int vadEosMs = 2000}) => asr,
+          ),
           currentTtsPlaybackModeProvider.overrideWithValue(
             TtsPlaybackMode.silent,
           ),
@@ -1200,7 +1202,9 @@ void main() {
         overrides: <Override>[
           xunfeiTtsClientProvider.overrideWithValue(tts),
           pcmStreamRecorderFactoryProvider.overrideWithValue(() => recorder),
-          xunfeiAsrClientFactoryProvider.overrideWithValue(() => asr),
+          xunfeiAsrClientFactoryProvider.overrideWithValue(
+            ({int vadEosMs = 2000}) => asr,
+          ),
           currentTtsPlaybackModeProvider.overrideWithValue(
             TtsPlaybackMode.silent,
           ),
@@ -1374,6 +1378,10 @@ void main() {
 class _FakePcmStreamRecorder implements PcmStreamRecorder {
   int startCount = 0;
   int stopCount = 0;
+  final ValueNotifier<double> _audioLevel = ValueNotifier<double>(0.0);
+
+  @override
+  ValueListenable<double> get audioLevel => _audioLevel;
 
   @override
   Future<bool> hasPermission() async => true;
@@ -1387,10 +1395,14 @@ class _FakePcmStreamRecorder implements PcmStreamRecorder {
   @override
   Future<void> stop() async {
     stopCount += 1;
+    _audioLevel.value = 0.0;
   }
 
   @override
-  Future<void> dispose() async {}
+  Future<void> dispose() async {
+    // 测试里 fake 是单例 + factory 复用，不 dispose 内部 notifier，
+    // 避免下一次 startListening 在 addListener 时抛 used-after-dispose。
+  }
 }
 
 class _FakeXunfeiAsrClient implements XunfeiAsrClient {

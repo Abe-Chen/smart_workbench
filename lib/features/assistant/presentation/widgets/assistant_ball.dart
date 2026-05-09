@@ -1,5 +1,6 @@
 import 'dart:math' as math;
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import '../../application/assistant_state.dart';
@@ -9,6 +10,8 @@ class AssistantBall extends StatefulWidget {
     required this.stage,
     this.countdownProgress = 0,
     this.size = 48,
+    this.audioLevel,
+    this.listenWindowRemainingMs = 0,
     super.key,
   });
 
@@ -16,21 +19,48 @@ class AssistantBall extends StatefulWidget {
   final double countdownProgress;
   final double size;
 
+  /// 实时麦克风能量 0.0-1.0，用于在 listen 阶段驱动光环脉动；
+  /// 非 listen 阶段忽略。
+  final ValueListenable<double>? audioLevel;
+
+  /// 开麦倒计时余量。只在 listen 且 0 < ms <= 3000 时触发"快超时"视觉档：
+  /// 暖橙色调 + 呼吸节奏加快，给用户视觉暗示该开口。
+  final int listenWindowRemainingMs;
+
+  bool get _urgent =>
+      stage == AssistantStage.listen &&
+      listenWindowRemainingMs > 0 &&
+      listenWindowRemainingMs <= 3000;
+
   @override
   State<AssistantBall> createState() => _AssistantBallState();
 }
 
 class _AssistantBallState extends State<AssistantBall>
     with TickerProviderStateMixin {
+  static const Duration _kIdleNormal = Duration(milliseconds: 2000);
+  static const Duration _kIdleUrgent = Duration(milliseconds: 600);
+
   late final AnimationController _idleCtrl = AnimationController(
     vsync: this,
-    duration: const Duration(milliseconds: 2000),
+    duration: _kIdleNormal,
   )..repeat();
 
   late final AnimationController _spinCtrl = AnimationController(
     vsync: this,
     duration: const Duration(milliseconds: 1200),
   )..repeat();
+
+  @override
+  void didUpdateWidget(covariant AssistantBall oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget._urgent != oldWidget._urgent) {
+      _idleCtrl.duration = widget._urgent ? _kIdleUrgent : _kIdleNormal;
+      _idleCtrl
+        ..stop()
+        ..repeat();
+    }
+  }
 
   @override
   void dispose() {
@@ -42,7 +72,12 @@ class _AssistantBallState extends State<AssistantBall>
   @override
   Widget build(BuildContext context) {
     final double s = widget.size;
-    final _BallStageStyle style = _styleForStage(widget.stage);
+    final _BallStageStyle style = _styleForStage(
+      widget.stage,
+      urgent: widget._urgent,
+    );
+    final ValueListenable<double>? level =
+        widget.stage == AssistantStage.listen ? widget.audioLevel : null;
     return SizedBox(
       width: s,
       height: s,
@@ -54,6 +89,7 @@ class _AssistantBallState extends State<AssistantBall>
             color: style.glowColor,
             size: s,
             active: widget.stage != AssistantStage.idle,
+            audioLevel: level,
           ),
           if (widget.countdownProgress > 0 &&
               widget.stage == AssistantStage.idle)
@@ -131,7 +167,14 @@ class _BallStageStyle {
   final Color foregroundColor;
 }
 
-_BallStageStyle _styleForStage(AssistantStage stage) {
+_BallStageStyle _styleForStage(AssistantStage stage, {bool urgent = false}) {
+  if (urgent && stage == AssistantStage.listen) {
+    return const _BallStageStyle(
+      gradient: <Color>[Color(0xFFFFB36C), Color(0xFFFFA374)],
+      glowColor: Color(0xFFFFA374),
+      foregroundColor: Colors.white,
+    );
+  }
   switch (stage) {
     case AssistantStage.listen:
       return const _BallStageStyle(
@@ -342,24 +385,35 @@ class _AmbientGlow extends StatelessWidget {
     required this.color,
     required this.size,
     required this.active,
+    this.audioLevel,
   });
 
   final AnimationController controller;
   final Color color;
   final double size;
   final bool active;
+  final ValueListenable<double>? audioLevel;
 
   @override
   Widget build(BuildContext context) {
+    final Listenable merged = audioLevel == null
+        ? controller
+        : Listenable.merge(<Listenable>[controller, audioLevel!]);
     return AnimatedBuilder(
-      animation: controller,
+      animation: merged,
       builder: (BuildContext context, _) {
-        final double pulse = active
+        final double level = audioLevel?.value ?? 0.0;
+        // 把 RMS（0.0-1.0，实际说话约 0.02-0.3）放大映射到 0-0.6 的脉动增益
+        final double levelBoost = (level * 4.0).clamp(0.0, 0.6);
+        final double basePulse = active
             ? 0.78 + 0.12 * math.sin(controller.value * math.pi * 2)
             : 0.7;
-        final double opacity = active
+        final double pulse = (basePulse + levelBoost * 0.5).clamp(0.4, 1.6);
+        final double baseOpacity = active
             ? 0.28 + 0.08 * math.sin(controller.value * math.pi * 2)
             : 0.16;
+        final double opacity =
+            (baseOpacity + levelBoost * 0.4).clamp(0.0, 0.85);
         return IgnorePointer(
           child: Container(
             width: size * pulse,

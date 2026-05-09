@@ -4,6 +4,7 @@ import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../core/voice/voice_providers.dart';
 import '../application/assistant_controller.dart';
 import '../application/assistant_state.dart';
 import '../domain/assistant_message.dart';
@@ -781,13 +782,23 @@ class _Header extends ConsumerWidget {
       ),
     );
     final bool isMuted = sessionMute == AssistantSessionMute.muted;
+    final int remainingMs = ref.watch(
+      assistantControllerProvider.select(
+        (AssistantUiState s) => s.listenWindowRemainingMs,
+      ),
+    );
     final String statusLabel = hasPendingConfirm
         ? '等你确认一下'
         : _stageStatusLabel(stage);
     final Color statusColor = _stageAccentColor(stage);
     return Row(
       children: <Widget>[
-        AssistantBall(stage: stage, size: 44),
+        AssistantBall(
+          stage: stage,
+          size: 44,
+          audioLevel: ref.read(liveAudioLevelProvider),
+          listenWindowRemainingMs: remainingMs,
+        ),
         const SizedBox(width: 10),
         Expanded(
           child: Column(
