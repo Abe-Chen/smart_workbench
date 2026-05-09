@@ -6,6 +6,7 @@ export 'cards/weather_card.dart'
     show WeatherCard, AssistantResultMetric, AssistantResultTimelinePoint;
 export 'cards/exchange_rate_card.dart' show ExchangeRateCard;
 export 'cards/world_clock_card.dart' show WorldClockCard, WorldClockEntry;
+export 'cards/poi_recommend_card.dart' show PoiRecommendCard, PoiItem, PoiKind;
 
 abstract class AssistantResultCard {
   const AssistantResultCard();

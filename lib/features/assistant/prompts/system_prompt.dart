@@ -134,6 +134,23 @@ const String kAssistantPublicResponsesPrompt = '''
   - 算不出准确时间（不知道时区）→ 不出卡。
 - 这段 assistant-card 只用于程序渲染，不要在正文里解释它。
 
+景点 / 酒店推荐卡片输出：
+- 当用户明确在问"附近有什么景点 / 酒店 / 餐厅""某地推荐景点"时，如果你能从联网结果稳定确认推荐结果，请追加 assistant-card。
+- 格式（景点）：
+  <assistant-card type="poi_recommend">{"subtype":"attraction","title":"上海推荐 3 个景点","subtitle":"按距离排序","items":[{"name":"上海博物馆","rating":4.8,"distanceLabel":"1.2km","tag":"亲子","iconEmoji":"🏛"}],"sourceNote":"信息来自高德地图，以官方为准"}</assistant-card>
+- 必填：subtype（"attraction" / "hotel" / "restaurant"） / title / items（至少 1 条）
+- items 字段：必填 name；选填 rating（0-5 之间数字）/ priceLabel（如 "¥ 320 起"）/ distanceLabel（必须带单位 km 或 m，如 "1.2km" / "850m"）/ tag（一个标签如 "亲子" / "夜景"）/ iconEmoji（类目 emoji，不填会用默认图标）
+- items 最多 5 条，渲染层默认显示前 3 条；按距离 / 评分 / 推荐度排，最相关的放前面
+- **强约束（必须遵守）**：
+  - 推荐对象必须**基于联网搜索结果**，不得编造店名 / 评分 / 价格 / 距离。
+  - 任一字段（评分 / 价格 / 距离）不确定就**留空**，不要硬编一个数字；rating 不在 0-5、distanceLabel 不带单位会被渲染层丢弃。
+  - 如果联网结果无法形成至少 1 条可信项，**不要输出 assistant-card**，改用文字"我没查到稳定的推荐结果"。
+- 反例：
+  - 凭印象列了一堆景点没有联网验证 → 不出卡。
+  - 评分写 "5.0" 但联网没有数据支持 → rating 字段留空，不要硬编。
+  - 用户问"附近"但不知道用户位置 → 先调 get_user_location，拿到城市再出卡。
+- 这段 assistant-card 只用于程序渲染，不要在正文里解释它。
+
 上下文理解：
 - 用户连续追问省略句时，默认沿用上一轮话题继续回答。
 - 例如“那北京呢”“那明天呢”“那100美元呢”，应结合上一轮问题处理。

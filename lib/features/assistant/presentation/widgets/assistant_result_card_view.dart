@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../../domain/assistant_result_card.dart';
 import 'cards/exchange_rate_card_view.dart';
+import 'cards/poi_recommend_card_view.dart';
 import 'cards/weather_card_view.dart';
 import 'cards/world_clock_card_view.dart';
 
@@ -26,6 +27,9 @@ class AssistantResultCardView extends StatelessWidget {
     }
     if (c is WorldClockCard) {
       return WorldClockCardView(card: c, compact: compact);
+    }
+    if (c is PoiRecommendCard) {
+      return PoiRecommendCardView(card: c, compact: compact);
     }
     return const SizedBox.shrink();
   }
