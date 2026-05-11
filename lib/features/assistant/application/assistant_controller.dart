@@ -2690,9 +2690,16 @@ class AssistantController extends Notifier<AssistantUiState> {
           dayLabel: dayLabel,
           hasReminder: hasReminder,
         );
+    // 主动建议触发时，如果抽屉关闭就走顶部 banner（推送形态）；
+    // 抽屉打开仍在抽屉内 _ProactiveSuggestionCard 显示（沉浸模式）
+    final AssistantSurfaceState? newSurface =
+        suggestion != null && !state.drawerOpen
+            ? AssistantSurfaceState.topBannerPush
+            : null;
     state = state.copyWith(
       proactiveSuggestion: suggestion,
       clearProactiveSuggestion: suggestion == null,
+      surfaceState: newSurface,
     );
     if (suggestion != null) {
       final String latest = _latestAssistantPrompt();
@@ -3169,9 +3176,11 @@ class AssistantController extends Notifier<AssistantUiState> {
       drawerOpen: willOpenDrawer,
       stage: AssistantStage.listen,
       replySurface: AssistantReplySurface.none,
+      // 抽屉打开走"沉浸模式"（partial 显示在抽屉内 _ListenStrip）；
+      // 抽屉关闭走"快速模式"，顶部浮窗显示 partial（决策 #2）
       surfaceState: willOpenDrawer
           ? AssistantSurfaceState.drawerOpen
-          : AssistantSurfaceState.none,
+          : AssistantSurfaceState.topBannerListen,
       clearCompactReply: true,
       clearAnswerCard: true,
       listeningMode: mode,
@@ -3305,10 +3314,15 @@ class AssistantController extends Notifier<AssistantUiState> {
     _recorderSub = null;
     await _recorder?.stop();
     await _asrClient?.stop();
+    final AssistantSurfaceState? clearedTopBanner =
+        state.surfaceState == AssistantSurfaceState.topBannerListen
+            ? AssistantSurfaceState.none
+            : null;
     state = state.copyWith(
       stage: AssistantStage.idle,
       listenPartialText: '',
       listenWindowRemainingMs: 0,
+      surfaceState: clearedTopBanner,
     );
     _teardownVoice();
   }
@@ -3329,10 +3343,16 @@ class AssistantController extends Notifier<AssistantUiState> {
       }
       _cancelOpenMicWait();
       _teardownVoice();
+      // ASR 收到 final 后顶部 banner 立刻淡出，让球切"在想"+ 大卡接管
+      final AssistantSurfaceState? clearedTopBanner =
+          state.surfaceState == AssistantSurfaceState.topBannerListen
+              ? AssistantSurfaceState.none
+              : null;
       state = state.copyWith(
         stage: AssistantStage.idle,
         listenPartialText: '',
         listenWindowRemainingMs: 0,
+        surfaceState: clearedTopBanner,
       );
       if (_autoSendOnFinal && voiceText.wakeWordOnly) {
         unawaited(

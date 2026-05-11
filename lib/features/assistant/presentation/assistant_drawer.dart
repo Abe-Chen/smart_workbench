@@ -17,6 +17,7 @@ import 'widgets/confirm_card.dart';
 import 'widgets/full_screen_answer_card.dart';
 import 'widgets/assistant_result_card_view.dart';
 import 'widgets/message_bubble.dart';
+import 'widgets/top_floating_banner.dart';
 
 /// workbench_shell 底部导航栏总占用高度（圆角条 94 + SafeArea.minimum bottom 10）。
 /// 抽屉要在这之上停住，否则输入框会被导航栏盖住。
@@ -40,6 +41,19 @@ class AssistantOverlay extends ConsumerWidget {
         !open &&
         state.surfaceState == AssistantSurfaceState.fullscreenAnswer &&
         answerKind != null;
+    // 顶部 banner 仅在抽屉关闭、非大卡时显示。
+    // listen 形态：用户唤醒说话中（surfaceState == topBannerListen + stage == listen）
+    // push 形态：主动建议触发（surfaceState == topBannerPush + proactiveSuggestion != null）
+    final bool showTopBannerListen =
+        !open &&
+        !showFullscreenAnswer &&
+        state.surfaceState == AssistantSurfaceState.topBannerListen &&
+        state.stage == AssistantStage.listen;
+    final bool showTopBannerPush =
+        !open &&
+        !showFullscreenAnswer &&
+        state.surfaceState == AssistantSurfaceState.topBannerPush &&
+        state.proactiveSuggestion != null;
     final EdgeInsets viewPadding = MediaQuery.viewPaddingOf(context);
     final double keyboard = MediaQuery.viewInsetsOf(context).bottom;
     final double topInset = viewPadding.top + _kDrawerEdgeGap;
@@ -64,6 +78,20 @@ class AssistantOverlay extends ConsumerWidget {
             right: 0,
             bottom: _kBottomNavReserve + 22,
             child: Center(child: _FloatingAssistantSurface(state: state)),
+          ),
+        if (showTopBannerListen)
+          Positioned(
+            top: 0,
+            left: 0,
+            right: 0,
+            child: _TopBannerListenLayer(state: state),
+          ),
+        if (showTopBannerPush)
+          Positioned(
+            top: 0,
+            left: 0,
+            right: 0,
+            child: _TopBannerPushLayer(state: state),
           ),
         Positioned(
           top: topInset,
@@ -125,6 +153,52 @@ class _FullscreenAnswerLayer extends ConsumerWidget {
       onClose: canClose ? () => controller.hideAnswerCard() : null,
       onExpand: controller.expandAnswerCardToDrawer,
       onInteract: canResetTimer ? controller.extendAnswerCardDisplay : null,
+    );
+  }
+}
+
+/// 顶部"在听..."浮窗。监听抽屉关闭时的 listen 状态，显示 ASR 识别中的实时文字。
+/// 内部用 Key(state.listenPartialText) 强制重建，确保动画跟随文字流式更新。
+class _TopBannerListenLayer extends ConsumerWidget {
+  const _TopBannerListenLayer({required this.state});
+
+  final AssistantUiState state;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final AssistantController controller = ref.read(
+      assistantControllerProvider.notifier,
+    );
+    final String partial = state.listenPartialText.trim();
+    return TopFloatingBanner(
+      key: const ValueKey<String>('top_banner_listen'),
+      kind: TopBannerKind.listenPartial,
+      message: partial.isEmpty ? '你可以直接说需求' : partial,
+      remainingMs: state.listenWindowRemainingMs,
+      onClose: () => controller.cancelListening(),
+    );
+  }
+}
+
+/// 顶部推送 banner。承载主动建议（创建日程后的"加提醒？"等），点展开进抽屉。
+class _TopBannerPushLayer extends ConsumerWidget {
+  const _TopBannerPushLayer({required this.state});
+
+  final AssistantUiState state;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final AssistantController controller = ref.read(
+      assistantControllerProvider.notifier,
+    );
+    final AssistantProactiveSuggestion suggestion = state.proactiveSuggestion!;
+    return TopFloatingBanner(
+      key: ValueKey<String>('top_banner_push_${suggestion.id}'),
+      kind: TopBannerKind.pushNotification,
+      title: suggestion.title,
+      message: suggestion.message,
+      onClose: () => controller.dismissProactiveSuggestion(),
+      onExpand: () => controller.openDrawer(),
     );
   }
 }
