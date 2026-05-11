@@ -35,7 +35,10 @@ import '../prompts/system_prompt.dart';
 import 'assistant_copywriter.dart';
 import 'assistant_request_router.dart';
 import 'assistant_state.dart';
+import 'assistant_surface_router.dart';
 import 'tool_registry.dart';
+
+export 'assistant_surface_router.dart' show AssistantEntrySource;
 
 const int _kMaxToolRounds = 4;
 const Duration _kFollowUpWindow = Duration(seconds: 5);
@@ -45,9 +48,11 @@ const Duration _kRecentWriteContextWindow = Duration(minutes: 5);
 /// 本地音频能量探测阈值（PCM16 RMS 归一化值）。
 /// 0.025 ≈ -32 dBFS，室内正常说话起步音量。
 const double _kSpeechRmsThreshold = 0.025;
+
 /// 连续 ≥ 此帧数（每帧 40ms）能量超阈值，才判定"用户开口"。
 /// 防抖：避免一次环境噪声尖峰误触发。
 const int _kSpeechHoldFrames = 2;
+
 /// 长按持续录音模式下用更宽松的 vad_eos，避免用户停顿想词被讯飞截断。
 const int _kPressToTalkVadEosMs = 8000;
 
@@ -85,8 +90,6 @@ _ListenTiming _listenTimingFor(_VoiceContinuationTrigger trigger) {
       );
   }
 }
-
-enum AssistantEntrySource { drawerText, drawerVoice, quickVoice }
 
 enum _PendingConfirmInputAction { confirm, cancel, unknown }
 
@@ -3215,6 +3218,7 @@ class AssistantController extends Notifier<AssistantUiState> {
         _consecutiveLoudFrames = 0;
       }
     }
+
     listenable.addListener(onLevel);
     _audioLevelListenable = listenable;
     _audioLevelListener = onLevel;
@@ -3529,7 +3533,10 @@ class AssistantController extends Notifier<AssistantUiState> {
     final String finalContent = displayContent.text.trim().isEmpty
         ? '我这次没拿到有效结果。'
         : displayContent.text.trim();
-    final AssistantReplySurface surface = _resolveReplySurface(finalContent);
+    final AssistantReplySurface surface = const LegacySurfaceRouter().resolve(
+      text: finalContent,
+      entrySource: _lastEntrySource,
+    );
     _replaceTrailingAssistant(
       content: finalContent,
       streaming: false,
@@ -3583,37 +3590,6 @@ class AssistantController extends Notifier<AssistantUiState> {
       // 后又要被 5 秒倒计时催着说话，与"深度阅读"姿势冲突）。
       _speakAsync(finalContent);
     }
-  }
-
-  AssistantReplySurface _resolveReplySurface(String text) {
-    switch (_lastEntrySource) {
-      case AssistantEntrySource.drawerText:
-      case AssistantEntrySource.drawerVoice:
-        return AssistantReplySurface.drawer;
-      case AssistantEntrySource.quickVoice:
-        return _shouldUseCompactCard(text)
-            ? AssistantReplySurface.compactCard
-            : AssistantReplySurface.drawer;
-    }
-  }
-
-  bool _shouldUseCompactCard(String text) {
-    final String normalized = text.replaceAll(RegExp(r'\s+'), ' ').trim();
-    if (normalized.isEmpty) {
-      return false;
-    }
-
-    final Iterable<RegExpMatch> punctuation = RegExp(
-      r'[。！？!?\.]',
-    ).allMatches(normalized);
-    final int sentenceCount = punctuation.length;
-    if (sentenceCount > 2) {
-      return false;
-    }
-    if (normalized.length <= 72) {
-      return true;
-    }
-    return sentenceCount > 0 && normalized.length <= 120;
   }
 
   String _buildSpeechText(String text) {
@@ -3765,9 +3741,7 @@ class AssistantController extends Notifier<AssistantUiState> {
       final int nextMs =
           state.listenWindowRemainingMs -
           const Duration(milliseconds: 200).inMilliseconds;
-      state = state.copyWith(
-        listenWindowRemainingMs: nextMs.clamp(0, totalMs),
-      );
+      state = state.copyWith(listenWindowRemainingMs: nextMs.clamp(0, totalMs));
     });
     _openMicTimeoutTimer = Timer(wait, () async {
       if (state.stage != AssistantStage.listen ||
@@ -4401,9 +4375,7 @@ int? _parseInt(Object? raw) {
 
 /// confirm 单字白名单：剥语气词与标点后**完全等于**这些 token 才算 confirm。
 /// 避免"好烦"中的"好"被 contains 模式误判。
-final RegExp _singleConfirmPattern = RegExp(
-  r'^(对|是|好|行|嗯|嗯嗯|嗯啊|嗯哼)$',
-);
+final RegExp _singleConfirmPattern = RegExp(r'^(对|是|好|行|嗯|嗯嗯|嗯啊|嗯哼)$');
 
 /// confirm 多字关键词：剥语气词与标点后**包含**这些子串就算 confirm。
 /// 必须 ≥ 2 字，避免单字误判。
@@ -4418,9 +4390,7 @@ final RegExp _negatedConfirmPattern = RegExp(
 );
 
 /// cancel 关键词 contains 模式（必须 ≥ 2 字，避免"不"单字误判其它正常表达）。
-final RegExp _cancelInputPattern = RegExp(
-  r'(取消|不用|算了|撤销|放弃|不要|先不)',
-);
+final RegExp _cancelInputPattern = RegExp(r'(取消|不用|算了|撤销|放弃|不要|先不)');
 
 /// close 关键词 contains 模式（"好了/就这样/可以了"等收尾表达）。
 final RegExp _conversationCloseInputPattern = RegExp(
