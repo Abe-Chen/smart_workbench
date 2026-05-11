@@ -21,6 +21,11 @@ import 'widgets/message_bubble.dart';
 /// 抽屉要在这之上停住，否则输入框会被导航栏盖住。
 const double _kBottomNavReserve = 104;
 const double _kDrawerEdgeGap = 12;
+const double _kDrawerPeekSize = 0.15;
+const double _kDrawerHalfSize = 0.6;
+const double _kDrawerFullSize = 0.9;
+const double _kDrawerMaxWidth = 980;
+const double _kDrawerCompactHeight = 260;
 
 class AssistantOverlay extends ConsumerWidget {
   const AssistantOverlay({super.key});
@@ -29,10 +34,8 @@ class AssistantOverlay extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final AssistantUiState state = ref.watch(assistantControllerProvider);
     final bool open = state.drawerOpen;
-    final Size screen = MediaQuery.sizeOf(context);
     final EdgeInsets viewPadding = MediaQuery.viewPaddingOf(context);
     final double keyboard = MediaQuery.viewInsetsOf(context).bottom;
-    final double drawerWidth = (screen.width * 0.4).clamp(360, 520);
     final double topInset = viewPadding.top + _kDrawerEdgeGap;
     final double bottomInset =
         (keyboard > 0 ? keyboard : _kBottomNavReserve) + _kDrawerEdgeGap;
@@ -52,51 +55,162 @@ class AssistantOverlay extends ConsumerWidget {
             bottom: _kBottomNavReserve + 22,
             child: Center(child: _FloatingAssistantSurface(state: state)),
           ),
-        AnimatedPositioned(
-          duration: const Duration(milliseconds: 360),
-          curve: Curves.easeOutQuint,
+        Positioned(
           top: topInset,
           bottom: bottomInset,
-          right: open ? _kDrawerEdgeGap : -drawerWidth - 24,
-          width: drawerWidth,
-          child: Material(
-            elevation: 0,
-            color: Colors.transparent,
-            child: ClipRRect(
-              borderRadius: BorderRadius.circular(28),
-              child: BackdropFilter(
-                filter: ui.ImageFilter.blur(sigmaX: 18, sigmaY: 18),
-                child: Container(
-                  decoration: BoxDecoration(
-                    gradient: const LinearGradient(
-                      begin: Alignment.topLeft,
-                      end: Alignment.bottomRight,
-                      colors: <Color>[Color(0xF8FFFFFF), Color(0xF1F6FAFF)],
-                    ),
-                    borderRadius: BorderRadius.circular(28),
-                    border: Border.all(
-                      color: Colors.white.withValues(alpha: 0.72),
-                    ),
-                    boxShadow: const <BoxShadow>[
-                      BoxShadow(
-                        color: Color(0x1F0D47A1),
-                        blurRadius: 34,
-                        offset: Offset(-6, 14),
-                      ),
-                      BoxShadow(
-                        color: Color(0x18FFFFFF),
-                        blurRadius: 10,
-                        offset: Offset(-3, -3),
-                      ),
-                    ],
-                  ),
-                  child: const _AssistantDrawerBody(),
-                ),
-              ),
-            ),
+          left: _kDrawerEdgeGap,
+          right: _kDrawerEdgeGap,
+          child: AnimatedSwitcher(
+            duration: const Duration(milliseconds: 280),
+            switchInCurve: Curves.easeOutCubic,
+            switchOutCurve: Curves.easeInCubic,
+            transitionBuilder: (Widget child, Animation<double> animation) {
+              final Animation<Offset> slide = Tween<Offset>(
+                begin: const Offset(0, 1.08),
+                end: Offset.zero,
+              ).animate(animation);
+              return FadeTransition(
+                opacity: animation,
+                child: SlideTransition(position: slide, child: child),
+              );
+            },
+            child: open
+                ? const _AssistantDrawerSheet(key: ValueKey<String>('open'))
+                : const SizedBox.shrink(key: ValueKey<String>('closed')),
           ),
         ),
       ],
+    );
+  }
+}
+
+class _AssistantDrawerSheet extends StatefulWidget {
+  const _AssistantDrawerSheet({super.key});
+
+  @override
+  State<_AssistantDrawerSheet> createState() => _AssistantDrawerSheetState();
+}
+
+class _AssistantDrawerSheetState extends State<_AssistantDrawerSheet> {
+  final DraggableScrollableController _controller =
+      DraggableScrollableController();
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  void _handleGrabberDragUpdate(
+    DragUpdateDetails details,
+    double availableHeight,
+  ) {
+    if (!_controller.isAttached || availableHeight <= 0) {
+      return;
+    }
+    final double delta = details.primaryDelta ?? 0;
+    final double nextSize = (_controller.size - delta / availableHeight).clamp(
+      _kDrawerPeekSize,
+      _kDrawerFullSize,
+    );
+    _controller.jumpTo(nextSize);
+  }
+
+  void _handleGrabberDragEnd(DragEndDetails details) {
+    if (!_controller.isAttached) {
+      return;
+    }
+    final double current = _controller.size;
+    const List<double> snapSizes = <double>[
+      _kDrawerPeekSize,
+      _kDrawerHalfSize,
+      _kDrawerFullSize,
+    ];
+    final double target = snapSizes.reduce((double a, double b) {
+      return (current - a).abs() <= (current - b).abs() ? a : b;
+    });
+    _controller.animateTo(
+      target,
+      duration: const Duration(milliseconds: 180),
+      curve: Curves.easeOutCubic,
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return LayoutBuilder(
+      builder: (BuildContext context, BoxConstraints constraints) {
+        return Align(
+          alignment: Alignment.bottomCenter,
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: _kDrawerMaxWidth),
+            child: DraggableScrollableSheet(
+              controller: _controller,
+              expand: false,
+              minChildSize: _kDrawerPeekSize,
+              initialChildSize: _kDrawerHalfSize,
+              maxChildSize: _kDrawerFullSize,
+              snap: true,
+              snapSizes: const <double>[
+                _kDrawerPeekSize,
+                _kDrawerHalfSize,
+                _kDrawerFullSize,
+              ],
+              builder:
+                  (BuildContext context, ScrollController scrollController) {
+                    return Material(
+                      elevation: 0,
+                      color: Colors.transparent,
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(28),
+                        child: BackdropFilter(
+                          filter: ui.ImageFilter.blur(sigmaX: 18, sigmaY: 18),
+                          child: Container(
+                            decoration: BoxDecoration(
+                              gradient: const LinearGradient(
+                                begin: Alignment.topLeft,
+                                end: Alignment.bottomRight,
+                                colors: <Color>[
+                                  Color(0xF8FFFFFF),
+                                  Color(0xF1F6FAFF),
+                                ],
+                              ),
+                              borderRadius: BorderRadius.circular(28),
+                              border: Border.all(
+                                color: Colors.white.withValues(alpha: 0.72),
+                              ),
+                              boxShadow: const <BoxShadow>[
+                                BoxShadow(
+                                  color: Color(0x1F0D47A1),
+                                  blurRadius: 34,
+                                  offset: Offset(0, 14),
+                                ),
+                                BoxShadow(
+                                  color: Color(0x18FFFFFF),
+                                  blurRadius: 10,
+                                  offset: Offset(-3, -3),
+                                ),
+                              ],
+                            ),
+                            child: _AssistantDrawerBody(
+                              scrollController: scrollController,
+                              onGrabberDragUpdate: (DragUpdateDetails details) {
+                                _handleGrabberDragUpdate(
+                                  details,
+                                  constraints.maxHeight,
+                                );
+                              },
+                              onGrabberDragEnd: _handleGrabberDragEnd,
+                            ),
+                          ),
+                        ),
+                      ),
+                    );
+                  },
+            ),
+          ),
+        );
+      },
     );
   }
 }
@@ -296,7 +410,15 @@ class _EdgeGlowPainter extends CustomPainter {
 }
 
 class _AssistantDrawerBody extends ConsumerStatefulWidget {
-  const _AssistantDrawerBody();
+  const _AssistantDrawerBody({
+    required this.scrollController,
+    required this.onGrabberDragUpdate,
+    required this.onGrabberDragEnd,
+  });
+
+  final ScrollController scrollController;
+  final GestureDragUpdateCallback onGrabberDragUpdate;
+  final GestureDragEndCallback onGrabberDragEnd;
 
   @override
   ConsumerState<_AssistantDrawerBody> createState() =>
@@ -305,21 +427,19 @@ class _AssistantDrawerBody extends ConsumerStatefulWidget {
 
 class _AssistantDrawerBodyState extends ConsumerState<_AssistantDrawerBody> {
   final TextEditingController _textCtrl = TextEditingController();
-  final ScrollController _scrollCtrl = ScrollController();
 
   @override
   void dispose() {
     _textCtrl.dispose();
-    _scrollCtrl.dispose();
     super.dispose();
   }
 
   void _scrollToBottom() {
-    if (!_scrollCtrl.hasClients) return;
+    if (!widget.scrollController.hasClients) return;
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!_scrollCtrl.hasClients) return;
-      _scrollCtrl.animateTo(
-        _scrollCtrl.position.maxScrollExtent,
+      if (!widget.scrollController.hasClients) return;
+      widget.scrollController.animateTo(
+        widget.scrollController.position.maxScrollExtent,
         duration: const Duration(milliseconds: 220),
         curve: Curves.easeOut,
       );
@@ -354,128 +474,234 @@ class _AssistantDrawerBodyState extends ConsumerState<_AssistantDrawerBody> {
         .where((AssistantMessage m) => m.isVisibleInChat)
         .toList();
 
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 14, 16, 14),
-      child: Column(
-        children: <Widget>[
-          const CompletionUndoListener(),
-          _Header(stage: state.stage),
-          const SizedBox(height: 10),
-          const Divider(height: 1, color: Color(0xFFE8EEFB)),
-          if (showRunStatus) ...<Widget>[
-            const SizedBox(height: 10),
-            AssistantRunStatusCard(progress: state.progress),
-          ],
-          Expanded(
-            child: visibleMessages.isEmpty
-                ? const _EmptyHint()
-                : ListView.builder(
-                    controller: _scrollCtrl,
-                    padding: const EdgeInsets.symmetric(vertical: 12),
-                    itemCount: visibleMessages.length,
-                    itemBuilder: (BuildContext context, int index) =>
-                        MessageBubble(message: visibleMessages[index]),
-                  ),
-          ),
-          if (state.pendingConfirm != null) ...<Widget>[
-            ConfirmCard(pending: state.pendingConfirm!),
-            const SizedBox(height: 8),
-          ],
-          if (state.proactiveSuggestion != null &&
-              state.pendingConfirm == null) ...<Widget>[
-            _ProactiveSuggestionCard(suggestion: state.proactiveSuggestion!),
-            const SizedBox(height: 8),
-          ],
-          if (state.listenError != null && !listening)
-            Padding(
-              padding: const EdgeInsets.only(bottom: 6),
-              child: Text(
-                state.listenError!,
-                maxLines: 2,
-                overflow: TextOverflow.ellipsis,
-                style: const TextStyle(color: Color(0xFFE14D3A), fontSize: 12),
+    return LayoutBuilder(
+      builder: (BuildContext context, BoxConstraints constraints) {
+        if (constraints.maxHeight < _kDrawerCompactHeight) {
+          return _DrawerPeekBody(
+            scrollController: widget.scrollController,
+            stage: state.stage,
+            onGrabberDragUpdate: widget.onGrabberDragUpdate,
+            onGrabberDragEnd: widget.onGrabberDragEnd,
+          );
+        }
+        return Padding(
+          padding: const EdgeInsets.fromLTRB(16, 10, 16, 14),
+          child: Column(
+            children: <Widget>[
+              const CompletionUndoListener(),
+              _DrawerGrabber(
+                onVerticalDragUpdate: widget.onGrabberDragUpdate,
+                onVerticalDragEnd: widget.onGrabberDragEnd,
               ),
-            ),
-          if (state.ttsError != null && !listening)
-            Padding(
-              padding: const EdgeInsets.only(bottom: 6),
-              child: Row(
-                children: <Widget>[
-                  Expanded(
-                    child: Text(
-                      state.ttsError!,
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        color: Color(0xFFE14D3A),
-                        fontSize: 12,
+              const SizedBox(height: 10),
+              _Header(stage: state.stage),
+              const SizedBox(height: 10),
+              const Divider(height: 1, color: Color(0xFFE8EEFB)),
+              if (showRunStatus) ...<Widget>[
+                const SizedBox(height: 10),
+                AssistantRunStatusCard(progress: state.progress),
+              ],
+              Expanded(
+                child: visibleMessages.isEmpty
+                    ? ListView(
+                        controller: widget.scrollController,
+                        padding: EdgeInsets.zero,
+                        children: const <Widget>[
+                          SizedBox(height: 220, child: _EmptyHint()),
+                        ],
+                      )
+                    : ListView.builder(
+                        controller: widget.scrollController,
+                        padding: const EdgeInsets.symmetric(vertical: 12),
+                        itemCount: visibleMessages.length,
+                        itemBuilder: (BuildContext context, int index) =>
+                            MessageBubble(message: visibleMessages[index]),
                       ),
+              ),
+              if (state.pendingConfirm != null) ...<Widget>[
+                ConfirmCard(pending: state.pendingConfirm!),
+                const SizedBox(height: 8),
+              ],
+              if (state.proactiveSuggestion != null &&
+                  state.pendingConfirm == null) ...<Widget>[
+                _ProactiveSuggestionCard(
+                  suggestion: state.proactiveSuggestion!,
+                ),
+                const SizedBox(height: 8),
+              ],
+              if (state.listenError != null && !listening)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 6),
+                  child: Text(
+                    state.listenError!,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      color: Color(0xFFE14D3A),
+                      fontSize: 12,
                     ),
                   ),
-                  IconButton(
-                    tooltip: '关闭',
-                    icon: const Icon(Icons.close_rounded, size: 16),
-                    color: const Color(0xFF7A8798),
-                    padding: EdgeInsets.zero,
-                    constraints: const BoxConstraints(
-                      minWidth: 24,
-                      minHeight: 24,
+                ),
+              if (state.ttsError != null && !listening)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 6),
+                  child: Row(
+                    children: <Widget>[
+                      Expanded(
+                        child: Text(
+                          state.ttsError!,
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            color: Color(0xFFE14D3A),
+                            fontSize: 12,
+                          ),
+                        ),
+                      ),
+                      IconButton(
+                        tooltip: '关闭',
+                        icon: const Icon(Icons.close_rounded, size: 16),
+                        color: const Color(0xFF7A8798),
+                        padding: EdgeInsets.zero,
+                        constraints: const BoxConstraints(
+                          minWidth: 24,
+                          minHeight: 24,
+                        ),
+                        onPressed: () => ref
+                            .read(assistantControllerProvider.notifier)
+                            .dismissTtsError(),
+                      ),
+                    ],
+                  ),
+                ),
+              if (state.error != null)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 6),
+                  child: Text(
+                    state.error!,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      color: Color(0xFFE14D3A),
+                      fontSize: 12,
                     ),
-                    onPressed: () => ref
-                        .read(assistantControllerProvider.notifier)
-                        .dismissTtsError(),
                   ),
-                ],
+                ),
+              if (listening)
+                _ListenStrip(
+                  partialText: state.listenPartialText,
+                  listeningMode: state.listeningMode,
+                  remainingMs: state.listenWindowRemainingMs,
+                  onCancel: () => ref
+                      .read(assistantControllerProvider.notifier)
+                      .cancelListening(),
+                ),
+              if (listening) const SizedBox(height: 8),
+              Container(
+                padding: const EdgeInsets.only(top: 10),
+                decoration: const BoxDecoration(
+                  border: Border(top: BorderSide(color: Color(0xFFE8EEFB))),
+                ),
+                child: _InputBar(
+                  controller: _textCtrl,
+                  disabled: inputBlocked,
+                  disabledHint: confirming ? '先确认或取消这一步' : null,
+                  listening: listening,
+                  listeningMode: state.listeningMode,
+                  micBlocked: micBlocked,
+                  onSend: _send,
+                  onMicLongPressStart: () => ref
+                      .read(assistantControllerProvider.notifier)
+                      .startListening(
+                        source: AssistantEntrySource.drawerVoice,
+                        mode: AssistantListeningMode.pressToTalk,
+                      ),
+                  onMicLongPressEnd: () => ref
+                      .read(assistantControllerProvider.notifier)
+                      .stopListening(),
+                  onMicLongPressCancel: () => ref
+                      .read(assistantControllerProvider.notifier)
+                      .cancelListening(),
+                ),
               ),
-            ),
-          if (state.error != null)
-            Padding(
-              padding: const EdgeInsets.only(bottom: 6),
-              child: Text(
-                state.error!,
-                maxLines: 2,
-                overflow: TextOverflow.ellipsis,
-                style: const TextStyle(color: Color(0xFFE14D3A), fontSize: 12),
-              ),
-            ),
-          if (listening)
-            _ListenStrip(
-              partialText: state.listenPartialText,
-              listeningMode: state.listeningMode,
-              remainingMs: state.listenWindowRemainingMs,
-              onCancel: () => ref
-                  .read(assistantControllerProvider.notifier)
-                  .cancelListening(),
-            ),
-          if (listening) const SizedBox(height: 8),
-          Container(
-            padding: const EdgeInsets.only(top: 10),
-            decoration: const BoxDecoration(
-              border: Border(top: BorderSide(color: Color(0xFFE8EEFB))),
-            ),
-            child: _InputBar(
-              controller: _textCtrl,
-              disabled: inputBlocked,
-              disabledHint: confirming ? '先确认或取消这一步' : null,
-              listening: listening,
-              listeningMode: state.listeningMode,
-              micBlocked: micBlocked,
-              onSend: _send,
-              onMicLongPressStart: () => ref
-                  .read(assistantControllerProvider.notifier)
-                  .startListening(
-                    source: AssistantEntrySource.drawerVoice,
-                    mode: AssistantListeningMode.pressToTalk,
-                  ),
-              onMicLongPressEnd: () => ref
-                  .read(assistantControllerProvider.notifier)
-                  .stopListening(),
-              onMicLongPressCancel: () => ref
-                  .read(assistantControllerProvider.notifier)
-                  .cancelListening(),
+            ],
+          ),
+        );
+      },
+    );
+  }
+}
+
+class _DrawerPeekBody extends StatelessWidget {
+  const _DrawerPeekBody({
+    required this.scrollController,
+    required this.stage,
+    required this.onGrabberDragUpdate,
+    required this.onGrabberDragEnd,
+  });
+
+  final ScrollController scrollController;
+  final AssistantStage stage;
+  final GestureDragUpdateCallback onGrabberDragUpdate;
+  final GestureDragEndCallback onGrabberDragEnd;
+
+  @override
+  Widget build(BuildContext context) {
+    return ListView(
+      controller: scrollController,
+      padding: const EdgeInsets.fromLTRB(16, 10, 16, 12),
+      children: <Widget>[
+        const CompletionUndoListener(),
+        _DrawerGrabber(
+          onVerticalDragUpdate: onGrabberDragUpdate,
+          onVerticalDragEnd: onGrabberDragEnd,
+        ),
+        const SizedBox(height: 10),
+        _Header(stage: stage),
+        const SizedBox(height: 8),
+        Center(
+          child: Text(
+            '上滑展开对话',
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+              color: const Color(0xFF7A8798),
+              fontWeight: FontWeight.w700,
             ),
           ),
-        ],
+        ),
+      ],
+    );
+  }
+}
+
+class _DrawerGrabber extends StatelessWidget {
+  const _DrawerGrabber({
+    required this.onVerticalDragUpdate,
+    required this.onVerticalDragEnd,
+  });
+
+  final GestureDragUpdateCallback onVerticalDragUpdate;
+  final GestureDragEndCallback onVerticalDragEnd;
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onVerticalDragUpdate: onVerticalDragUpdate,
+      onVerticalDragEnd: onVerticalDragEnd,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 4),
+        child: Center(
+          child: Container(
+            width: 36,
+            height: 4,
+            decoration: BoxDecoration(
+              color: const Color(0xFF9AA8BD).withValues(alpha: 0.58),
+              borderRadius: BorderRadius.circular(999),
+            ),
+          ),
+        ),
       ),
     );
   }
