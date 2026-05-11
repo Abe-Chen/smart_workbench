@@ -8,6 +8,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../core/database/database_providers.dart';
 import '../../../core/identity/device_id.dart';
 import '../../../core/location/location_repository.dart';
+import '../../../core/notifications/local_notification_service.dart';
 import '../../../core/utils/calendar_utils.dart';
 import '../../../core/voice/pcm_stream_recorder.dart';
 import '../../../core/voice/voice_providers.dart';
@@ -20,6 +21,7 @@ import '../data/tts_facade.dart';
 import '../data/volc_tts_client.dart';
 import '../data/xunfei_tts_client.dart';
 import '../domain/chinese_filler_stripper.dart';
+import '../presentation/widgets/answer_cards/answer_card_models.dart';
 import '../domain/assistant_execution_mode.dart';
 import '../../settings/application/app_settings_controller.dart';
 import '../../settings/domain/app_settings.dart';
@@ -3435,6 +3437,8 @@ class AssistantController extends Notifier<AssistantUiState> {
       if (_isFullscreenAnswerActive && _answerCardAutoDismisses()) {
         _startFollowUpWindow();
       }
+      // 即使不需要播报也要 flush（pending reminder 不能因为这次没 TTS 就一直挂着）
+      _flushPendingReminderIfAny();
       return;
     }
 
@@ -3450,6 +3454,9 @@ class AssistantController extends Notifier<AssistantUiState> {
     if (_isFullscreenAnswerActive && _answerCardAutoDismisses()) {
       _startFollowUpWindow();
     }
+    // 决策 #4「助手像人」：TTS 自然完成后才 flush 待处理提醒，
+    // 不在 TTS 中间打断当前回答
+    _flushPendingReminderIfAny();
   }
 
   Future<void> replayLatestAssistantReply() async {
@@ -3490,7 +3497,73 @@ class AssistantController extends Notifier<AssistantUiState> {
           : AssistantSurfaceState.none,
       clearCompactReply: true,
       clearAnswerCard: true,
+      clearReminder: true,
     );
+  }
+
+  // ---------------- 提醒（Reminder）接入 ----------------
+
+  /// 等 TTS 自然播完才弹的待处理提醒（"助手像人"原则——不打断当前回答）。
+  /// 单值：多个提醒到达时最新的覆盖旧的（不堆叠）。
+  ReminderPayload? _pendingReminderPayloadQueue;
+  ReminderCardData? _pendingReminderDataQueue;
+
+  /// 由 [ForegroundReminderController] 检测到提醒到点时调用。
+  /// 决策 #4：当前正在播 TTS（fullscreenAnswer + answer/think 阶段）时**不打断**，
+  /// 等 TTS 自然完成后由 [_flushPendingReminderIfAny] 接管。
+  void enqueueReminder({
+    required ReminderPayload payload,
+    required ReminderCardData data,
+  }) {
+    final bool ttsBusy =
+        state.surfaceState == AssistantSurfaceState.fullscreenAnswer &&
+        (state.stage == AssistantStage.answer ||
+            state.stage == AssistantStage.think);
+    if (ttsBusy) {
+      _pendingReminderPayloadQueue = payload;
+      _pendingReminderDataQueue = data;
+      return;
+    }
+    _showReminderCard(payload: payload, data: data);
+  }
+
+  void _showReminderCard({
+    required ReminderPayload payload,
+    required ReminderCardData data,
+  }) {
+    _cancelFollowUpWindow();
+    _pendingReminderPayloadQueue = null;
+    _pendingReminderDataQueue = null;
+    state = state.copyWith(
+      drawerOpen: false,
+      surfaceState: AssistantSurfaceState.fullscreenAnswer,
+      answerCardKind: AnswerCardKind.reminder,
+      answerCardText: data.title,
+      reminderCardData: data,
+      reminderPayload: payload,
+    );
+    // 异步播报"提醒：xxx"。reminder 类型的大卡不自动消散，等用户操作。
+    unawaited(_speakReminderTts(data));
+  }
+
+  Future<void> _speakReminderTts(ReminderCardData data) async {
+    final TtsFacade tts = ref.read(ttsFacadeProvider);
+    final String voice = ref.read(currentTtsVoiceProvider);
+    final double rate = ref.read(currentTtsSpeedProvider);
+    final String text = '${data.timeLabel}，${data.title}';
+    try {
+      await tts.speakAndWaitComplete(text, voice: voice, rate: rate);
+    } catch (err) {
+      if (isTtsInterrupted(err)) return;
+      state = state.copyWith(ttsError: 'TTS 播报失败：$err');
+    }
+  }
+
+  void _flushPendingReminderIfAny() {
+    final ReminderPayload? p = _pendingReminderPayloadQueue;
+    final ReminderCardData? d = _pendingReminderDataQueue;
+    if (p == null || d == null) return;
+    _showReminderCard(payload: p, data: d);
   }
 
   void extendAnswerCardDisplay() {

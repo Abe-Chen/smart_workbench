@@ -1,9 +1,11 @@
+import '../../../core/notifications/local_notification_service.dart';
 import '../domain/assistant_execution_mode.dart';
 import '../domain/assistant_confirm_preview.dart';
 import '../domain/assistant_message.dart';
 import '../domain/assistant_proactive_suggestion.dart';
 import '../domain/assistant_result_card.dart';
 import '../domain/tool_call.dart';
+import '../presentation/widgets/answer_cards/answer_card_models.dart';
 
 /// 小治状态机。W1 暂时只用 idle / think / answer / error；
 /// listen 留给 W2 接 ASR；confirm 留给 W3 接日程操作。
@@ -223,6 +225,8 @@ class AssistantUiState {
     this.pendingConfirm,
     this.completionUndo,
     this.proactiveSuggestion,
+    this.reminderCardData,
+    this.reminderPayload,
   });
 
   factory AssistantUiState.initial() => const AssistantUiState(
@@ -281,6 +285,12 @@ class AssistantUiState {
   /// 写入成功后的小治主动建议。只用于展示和承接下一步，不参与 API 历史。
   final AssistantProactiveSuggestion? proactiveSuggestion;
 
+  /// reminder 大卡（AnswerCardKind.reminder）的渲染数据（标题/时间/副标题）。
+  final ReminderCardData? reminderCardData;
+
+  /// reminder 大卡背后的原始 payload（task 完成、snooze 时需要 task_id / occurrence_date）。
+  final ReminderPayload? reminderPayload;
+
   AssistantUiState copyWith({
     bool? drawerOpen,
     AssistantStage? stage,
@@ -317,6 +327,9 @@ class AssistantUiState {
     bool clearCompletionUndo = false,
     AssistantProactiveSuggestion? proactiveSuggestion,
     bool clearProactiveSuggestion = false,
+    ReminderCardData? reminderCardData,
+    ReminderPayload? reminderPayload,
+    bool clearReminder = false,
   }) {
     return AssistantUiState(
       drawerOpen: drawerOpen ?? this.drawerOpen,
@@ -364,6 +377,12 @@ class AssistantUiState {
       proactiveSuggestion: clearProactiveSuggestion
           ? null
           : (proactiveSuggestion ?? this.proactiveSuggestion),
+      reminderCardData: clearReminder
+          ? null
+          : (reminderCardData ?? this.reminderCardData),
+      reminderPayload: clearReminder
+          ? null
+          : (reminderPayload ?? this.reminderPayload),
     );
   }
 }

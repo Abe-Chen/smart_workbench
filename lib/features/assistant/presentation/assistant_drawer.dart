@@ -4,7 +4,10 @@ import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../core/notifications/local_notification_service.dart';
+import '../../../core/utils/calendar_utils.dart';
 import '../../../core/voice/voice_providers.dart';
+import '../../task/application/task_providers.dart';
 import '../application/assistant_controller.dart';
 import '../application/assistant_state.dart';
 import '../domain/assistant_message.dart';
@@ -150,9 +153,30 @@ class _FullscreenAnswerLayer extends ConsumerWidget {
       pendingConfirm: kind == AnswerCardKind.confirm
           ? state.pendingConfirm
           : null,
+      reminder: kind == AnswerCardKind.reminder ? state.reminderCardData : null,
       onClose: canClose ? () => controller.hideAnswerCard() : null,
       onExpand: controller.expandAnswerCardToDrawer,
       onInteract: canResetTimer ? controller.extendAnswerCardDisplay : null,
+      onReminderRead: kind == AnswerCardKind.reminder
+          ? () async {
+              final ReminderPayload? payload = state.reminderPayload;
+              controller.hideAnswerCard();
+              if (payload != null) {
+                await ref
+                    .read(taskMutationControllerProvider)
+                    .completeTaskById(
+                      taskId: payload.taskId,
+                      occurrenceDate: normalizeDate(payload.occurrenceDate),
+                    );
+              }
+            }
+          : null,
+      onReminderSnooze: kind == AnswerCardKind.reminder
+          ? () => controller.hideAnswerCard()
+          : null,
+      onReminderClose: kind == AnswerCardKind.reminder
+          ? () => controller.hideAnswerCard()
+          : null,
     );
   }
 }
