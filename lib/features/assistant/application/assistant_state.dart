@@ -11,6 +11,24 @@ enum AssistantStage { idle, listen, think, answer, confirm, error }
 
 enum AssistantReplySurface { none, compactCard, drawer }
 
+enum AssistantSurfaceState {
+  none,
+  topBannerListen,
+  topBannerPush,
+  fullscreenAnswer,
+  drawerOpen,
+}
+
+enum AnswerCardKind {
+  infoCard,
+  toolFeedback,
+  plainText,
+  clarification,
+  confirm,
+  error,
+  reminder,
+}
+
 enum AssistantListeningMode { openMic, pressToTalk }
 
 /// 当前对话会话级的播报覆盖。
@@ -185,6 +203,10 @@ class AssistantUiState {
     required this.stage,
     required this.messages,
     required this.replySurface,
+    this.surfaceState = AssistantSurfaceState.none,
+    this.answerCardKind,
+    this.answerCardText,
+    this.answerCardResultCard,
     this.error,
     this.errorState,
     this.listenPartialText = '',
@@ -214,6 +236,10 @@ class AssistantUiState {
   final AssistantStage stage;
   final List<AssistantMessage> messages;
   final AssistantReplySurface replySurface;
+  final AssistantSurfaceState surfaceState;
+  final AnswerCardKind? answerCardKind;
+  final String? answerCardText;
+  final AssistantResultCard? answerCardResultCard;
   final String? error;
   final AssistantErrorState? errorState;
 
@@ -260,6 +286,11 @@ class AssistantUiState {
     AssistantStage? stage,
     List<AssistantMessage>? messages,
     AssistantReplySurface? replySurface,
+    AssistantSurfaceState? surfaceState,
+    AnswerCardKind? answerCardKind,
+    String? answerCardText,
+    AssistantResultCard? answerCardResultCard,
+    bool clearAnswerCard = false,
     String? error,
     bool clearError = false,
     AssistantErrorState? errorState,
@@ -292,6 +323,16 @@ class AssistantUiState {
       stage: stage ?? this.stage,
       messages: messages ?? this.messages,
       replySurface: replySurface ?? this.replySurface,
+      surfaceState: surfaceState ?? this.surfaceState,
+      answerCardKind: clearAnswerCard
+          ? null
+          : (answerCardKind ?? this.answerCardKind),
+      answerCardText: clearAnswerCard
+          ? null
+          : (answerCardText ?? this.answerCardText),
+      answerCardResultCard: clearAnswerCard
+          ? null
+          : (answerCardResultCard ?? this.answerCardResultCard),
       error: clearError ? null : (error ?? this.error),
       errorState: clearErrorState ? null : (errorState ?? this.errorState),
       listenPartialText: listenPartialText ?? this.listenPartialText,

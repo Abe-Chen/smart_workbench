@@ -328,6 +328,48 @@ void main() {
       expect(_latestAssistantText(container), isNot(contains('去取消')));
     });
 
+    test('quickVoice 公共回答异常走全屏错误大卡', () async {
+      final StreamController<PublicResponseEvent> stream =
+          StreamController<PublicResponseEvent>();
+      final _FakeDoubaoResponsesClient client = _FakeDoubaoResponsesClient(
+        <StreamController<PublicResponseEvent>>[stream],
+      );
+
+      final ProviderContainer container = ProviderContainer(
+        overrides: <Override>[
+          doubaoResponsesClientProvider.overrideWithValue(client),
+          currentTtsPlaybackModeProvider.overrideWithValue(
+            TtsPlaybackMode.silent,
+          ),
+        ],
+      );
+      addTearDown(container.dispose);
+
+      final Future<void> future = container
+          .read(assistantControllerProvider.notifier)
+          .sendUserMessage('今天美元汇率多少', source: AssistantEntrySource.quickVoice);
+
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      stream.addError(
+        DoubaoResponsesException(
+          type: AssistantErrorType.unknown,
+          message: '网络异常',
+        ),
+      );
+      await stream.close();
+      await future;
+
+      final AssistantUiState state = container.read(
+        assistantControllerProvider,
+      );
+      expect(state.drawerOpen, isFalse);
+      expect(state.stage, AssistantStage.error);
+      expect(state.surfaceState, AssistantSurfaceState.fullscreenAnswer);
+      expect(state.answerCardKind, AnswerCardKind.error);
+      expect(state.answerCardText, contains('网络异常'));
+      expect(state.followUpRemainingMs, greaterThan(0));
+    });
+
     test('模型追问路线信息后说取消不会被当成目的地', () async {
       final StreamController<PublicResponseEvent> first =
           StreamController<PublicResponseEvent>();

@@ -14,6 +14,7 @@ import 'widgets/assistant_ball.dart';
 import 'widgets/assistant_run_status_card.dart';
 import 'widgets/completion_undo_listener.dart';
 import 'widgets/confirm_card.dart';
+import 'widgets/full_screen_answer_card.dart';
 import 'widgets/assistant_result_card_view.dart';
 import 'widgets/message_bubble.dart';
 
@@ -34,6 +35,11 @@ class AssistantOverlay extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final AssistantUiState state = ref.watch(assistantControllerProvider);
     final bool open = state.drawerOpen;
+    final AnswerCardKind? answerKind = state.answerCardKind;
+    final bool showFullscreenAnswer =
+        !open &&
+        state.surfaceState == AssistantSurfaceState.fullscreenAnswer &&
+        answerKind != null;
     final EdgeInsets viewPadding = MediaQuery.viewPaddingOf(context);
     final double keyboard = MediaQuery.viewInsetsOf(context).bottom;
     final double topInset = viewPadding.top + _kDrawerEdgeGap;
@@ -48,7 +54,11 @@ class AssistantOverlay extends ConsumerWidget {
               state.stage != AssistantStage.idle ||
               state.followUpRemainingMs > 0,
         ),
-        if (!open)
+        if (showFullscreenAnswer)
+          Positioned.fill(
+            child: _FullscreenAnswerLayer(state: state, kind: answerKind),
+          ),
+        if (!open && !showFullscreenAnswer)
           Positioned(
             left: 0,
             right: 0,
@@ -80,6 +90,41 @@ class AssistantOverlay extends ConsumerWidget {
           ),
         ),
       ],
+    );
+  }
+}
+
+class _FullscreenAnswerLayer extends ConsumerWidget {
+  const _FullscreenAnswerLayer({required this.state, required this.kind});
+
+  final AssistantUiState state;
+  final AnswerCardKind kind;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final AssistantController controller = ref.read(
+      assistantControllerProvider.notifier,
+    );
+    final bool canClose = switch (kind) {
+      AnswerCardKind.infoCard ||
+      AnswerCardKind.toolFeedback ||
+      AnswerCardKind.plainText ||
+      AnswerCardKind.error => true,
+      AnswerCardKind.clarification ||
+      AnswerCardKind.confirm ||
+      AnswerCardKind.reminder => false,
+    };
+    final bool canResetTimer = canClose;
+    return FullScreenAnswerCard(
+      kind: kind,
+      message: state.answerCardText ?? '',
+      resultCard: state.answerCardResultCard,
+      pendingConfirm: kind == AnswerCardKind.confirm
+          ? state.pendingConfirm
+          : null,
+      onClose: canClose ? () => controller.hideAnswerCard() : null,
+      onExpand: controller.expandAnswerCardToDrawer,
+      onInteract: canResetTimer ? controller.extendAnswerCardDisplay : null,
     );
   }
 }

@@ -3,7 +3,6 @@ import 'dart:ui';
 import 'package:flutter/material.dart';
 
 import '../../application/assistant_state.dart';
-import '../../application/assistant_surface_router.dart';
 import '../../domain/assistant_result_card.dart';
 import 'answer_cards/answer_card_models.dart';
 import 'answer_cards/clarification_layout.dart';
@@ -24,6 +23,7 @@ class FullScreenAnswerCard extends StatelessWidget {
     this.reminder,
     this.onClose,
     this.onExpand,
+    this.onInteract,
     this.onRetry,
     this.onUndo,
     this.onReminderRead,
@@ -40,6 +40,7 @@ class FullScreenAnswerCard extends StatelessWidget {
   final ReminderCardData? reminder;
   final VoidCallback? onClose;
   final VoidCallback? onExpand;
+  final VoidCallback? onInteract;
   final VoidCallback? onRetry;
   final VoidCallback? onUndo;
   final VoidCallback? onReminderRead;
@@ -73,6 +74,7 @@ class FullScreenAnswerCard extends StatelessWidget {
                 return Center(
                   child: GestureDetector(
                     behavior: HitTestBehavior.opaque,
+                    onTap: onInteract,
                     onVerticalDragEnd: (DragEndDetails details) {
                       final double velocity = details.primaryVelocity ?? 0;
                       if (velocity < -360) {

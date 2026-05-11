@@ -167,13 +167,18 @@ class AssistantController extends Notifier<AssistantUiState> {
     state = state.copyWith(
       drawerOpen: true,
       replySurface: AssistantReplySurface.drawer,
+      surfaceState: AssistantSurfaceState.drawerOpen,
       clearError: true,
       clearCompactReply: true,
+      clearAnswerCard: true,
     );
   }
 
   void closeDrawer() {
-    state = state.copyWith(drawerOpen: false);
+    state = state.copyWith(
+      drawerOpen: false,
+      surfaceState: AssistantSurfaceState.none,
+    );
   }
 
   void toggleDrawer() {
@@ -328,7 +333,11 @@ class AssistantController extends Notifier<AssistantUiState> {
       stage: AssistantStage.think,
       messages: <AssistantMessage>[...state.messages, userMsg, placeholder],
       replySurface: AssistantReplySurface.none,
+      surfaceState: state.drawerOpen
+          ? AssistantSurfaceState.drawerOpen
+          : AssistantSurfaceState.none,
       clearCompactReply: true,
+      clearAnswerCard: true,
       clearError: true,
       clearErrorState: true,
       progress: AssistantProgressState(
@@ -358,11 +367,7 @@ class AssistantController extends Notifier<AssistantUiState> {
     } catch (e) {
       final String message = _userFacingErrorMessage(e);
       _replaceTrailingAssistant(content: '出错了：$message', streaming: false);
-      state = state.copyWith(
-        stage: AssistantStage.error,
-        error: message,
-        clearProgress: true,
-      );
+      _showAssistantError(message);
     }
   }
 
@@ -1363,6 +1368,7 @@ class AssistantController extends Notifier<AssistantUiState> {
     _cancelFollowUpWindow();
     _lastEntrySource = source;
     _aborted = false;
+    final bool useDrawer = source != AssistantEntrySource.quickVoice;
     final AssistantMessage userMsg = AssistantMessage(
       role: AssistantRole.user,
       content: displayText,
@@ -1373,10 +1379,17 @@ class AssistantController extends Notifier<AssistantUiState> {
       streaming: true,
     );
     state = state.copyWith(
+      drawerOpen: useDrawer,
       stage: AssistantStage.think,
       messages: <AssistantMessage>[...state.messages, userMsg, placeholder],
-      replySurface: AssistantReplySurface.none,
+      replySurface: useDrawer
+          ? AssistantReplySurface.drawer
+          : AssistantReplySurface.none,
+      surfaceState: useDrawer
+          ? AssistantSurfaceState.drawerOpen
+          : AssistantSurfaceState.none,
       clearCompactReply: true,
+      clearAnswerCard: true,
       clearError: true,
       clearErrorState: true,
       progress: AssistantProgressState(
@@ -1751,12 +1764,19 @@ class AssistantController extends Notifier<AssistantUiState> {
       content: '',
       streaming: true,
     );
+    final bool useDrawer = source != AssistantEntrySource.quickVoice;
     state = state.copyWith(
-      drawerOpen: true,
+      drawerOpen: useDrawer,
       stage: AssistantStage.think,
       messages: <AssistantMessage>[...state.messages, userMsg, placeholder],
-      replySurface: AssistantReplySurface.drawer,
+      replySurface: useDrawer
+          ? AssistantReplySurface.drawer
+          : AssistantReplySurface.none,
+      surfaceState: useDrawer
+          ? AssistantSurfaceState.drawerOpen
+          : AssistantSurfaceState.none,
       clearCompactReply: true,
+      clearAnswerCard: true,
       clearError: true,
       clearErrorState: true,
       progress: AssistantProgressState(
@@ -1783,11 +1803,15 @@ class AssistantController extends Notifier<AssistantUiState> {
         _VoiceContinuationTrigger.none,
   }) {
     _finishAssistantTurn(text, voiceContinuation: voiceContinuation);
-    state = state.copyWith(
-      drawerOpen: true,
-      replySurface: AssistantReplySurface.drawer,
-      clearCompactReply: true,
-    );
+    if (_lastEntrySource != AssistantEntrySource.quickVoice) {
+      state = state.copyWith(
+        drawerOpen: true,
+        replySurface: AssistantReplySurface.drawer,
+        surfaceState: AssistantSurfaceState.drawerOpen,
+        clearCompactReply: true,
+        clearAnswerCard: true,
+      );
+    }
   }
 
   Future<void> _runPublicResponse(
@@ -1883,12 +1907,7 @@ class AssistantController extends Notifier<AssistantUiState> {
         content: '出错了：${errorState.message}',
         streaming: false,
       );
-      state = state.copyWith(
-        stage: AssistantStage.error,
-        error: errorState.message,
-        errorState: errorState,
-        clearProgress: true,
-      );
+      _showAssistantError(errorState.message, errorState: errorState);
       return;
     } finally {
       _stopPublicProgressTracking();
@@ -1915,12 +1934,7 @@ class AssistantController extends Notifier<AssistantUiState> {
         content: '出错了：${errorState.message}',
         streaming: false,
       );
-      state = state.copyWith(
-        stage: AssistantStage.error,
-        error: errorState.message,
-        errorState: errorState,
-        clearProgress: true,
-      );
+      _showAssistantError(errorState.message, errorState: errorState);
       return;
     }
     _lastPublicMode = mode;
@@ -2144,12 +2158,7 @@ class AssistantController extends Notifier<AssistantUiState> {
         content: '出错了：${errorState.message}',
         streaming: false,
       );
-      state = state.copyWith(
-        stage: AssistantStage.error,
-        error: errorState.message,
-        errorState: errorState,
-        clearProgress: true,
-      );
+      _showAssistantError(errorState.message, errorState: errorState);
       return;
     }
     if (interruption.keepPartialOutput && currentContent.isNotEmpty) {
@@ -2444,9 +2453,21 @@ class AssistantController extends Notifier<AssistantUiState> {
     AssistantConfirmPreview preview, {
     bool resumeConversationAfterConfirm = true,
   }) {
+    final bool useFullscreenAnswer =
+        _lastEntrySource == AssistantEntrySource.quickVoice;
     state = state.copyWith(
       stage: AssistantStage.confirm,
-      drawerOpen: true,
+      drawerOpen: !useFullscreenAnswer,
+      replySurface: useFullscreenAnswer
+          ? AssistantReplySurface.none
+          : AssistantReplySurface.drawer,
+      surfaceState: useFullscreenAnswer
+          ? AssistantSurfaceState.fullscreenAnswer
+          : AssistantSurfaceState.drawerOpen,
+      answerCardKind: useFullscreenAnswer ? AnswerCardKind.confirm : null,
+      answerCardText: useFullscreenAnswer ? preview.title : null,
+      clearAnswerCard: !useFullscreenAnswer,
+      clearCompactReply: true,
       pendingConfirm: AssistantPendingConfirm(
         toolCall: call,
         preview: preview,
@@ -2479,6 +2500,8 @@ class AssistantController extends Notifier<AssistantUiState> {
       state = state.copyWith(
         clearPendingConfirm: true,
         stage: AssistantStage.idle,
+        surfaceState: AssistantSurfaceState.none,
+        clearAnswerCard: true,
         clearProgress: true,
       );
       return;
@@ -2486,6 +2509,10 @@ class AssistantController extends Notifier<AssistantUiState> {
     state = state.copyWith(
       stage: AssistantStage.think,
       clearPendingConfirm: true,
+      surfaceState: state.drawerOpen
+          ? AssistantSurfaceState.drawerOpen
+          : AssistantSurfaceState.none,
+      clearAnswerCard: true,
       progress: const AssistantProgressState(
         mode: AssistantExecutionMode.local,
         phase: AssistantProgressPhase.executing,
@@ -2528,6 +2555,10 @@ class AssistantController extends Notifier<AssistantUiState> {
         stage: AssistantStage.think,
         clearPendingConfirm: true,
         clearPendingWriteDraft: true,
+        surfaceState: state.drawerOpen
+            ? AssistantSurfaceState.drawerOpen
+            : AssistantSurfaceState.none,
+        clearAnswerCard: true,
         progress: const AssistantProgressState(
           mode: AssistantExecutionMode.local,
           phase: AssistantProgressPhase.cancelled,
@@ -2547,6 +2578,10 @@ class AssistantController extends Notifier<AssistantUiState> {
       state = state.copyWith(
         stage: AssistantStage.think,
         clearPendingConfirm: true,
+        surfaceState: state.drawerOpen
+            ? AssistantSurfaceState.drawerOpen
+            : AssistantSurfaceState.none,
+        clearAnswerCard: true,
         progress: const AssistantProgressState(
           mode: AssistantExecutionMode.local,
           phase: AssistantProgressPhase.cancelled,
@@ -2561,6 +2596,10 @@ class AssistantController extends Notifier<AssistantUiState> {
     state = state.copyWith(
       stage: AssistantStage.think,
       clearPendingConfirm: true,
+      surfaceState: state.drawerOpen
+          ? AssistantSurfaceState.drawerOpen
+          : AssistantSurfaceState.none,
+      clearAnswerCard: true,
       progress: const AssistantProgressState(
         mode: AssistantExecutionMode.local,
         phase: AssistantProgressPhase.cancelled,
@@ -2885,11 +2924,7 @@ class AssistantController extends Notifier<AssistantUiState> {
     } catch (e) {
       final String message = _userFacingErrorMessage(e);
       _replaceTrailingAssistant(content: '出错了：$message', streaming: false);
-      state = state.copyWith(
-        stage: AssistantStage.error,
-        error: message,
-        clearProgress: true,
-      );
+      _showAssistantError(message);
     }
   }
 
@@ -3052,8 +3087,12 @@ class AssistantController extends Notifier<AssistantUiState> {
     _pendingTripPlanningFrame = null;
     _voiceContinuationAllowedForCurrentTurn = false;
     // sessionMute / pendingWriteDraft / pendingConfirm / completionUndo 都跟随会话生命周期重置。
+    final bool keepDrawerOpen = state.drawerOpen;
     state = AssistantUiState.initial().copyWith(
-      drawerOpen: state.drawerOpen,
+      drawerOpen: keepDrawerOpen,
+      surfaceState: keepDrawerOpen
+          ? AssistantSurfaceState.drawerOpen
+          : AssistantSurfaceState.none,
       clearProgress: true,
       clearTtsError: true,
       clearPendingWriteDraft: true,
@@ -3122,11 +3161,19 @@ class AssistantController extends Notifier<AssistantUiState> {
     _cancelFollowUpWindow();
     _cancelOpenMicWait();
     _listeningSource = source;
+    final bool forceDrawerForConfirm =
+        hasPendingConfirm &&
+        state.surfaceState != AssistantSurfaceState.fullscreenAnswer;
+    final bool willOpenDrawer = forceDrawerForConfirm ? true : openDrawer;
     state = state.copyWith(
-      drawerOpen: hasPendingConfirm ? true : openDrawer,
+      drawerOpen: willOpenDrawer,
       stage: AssistantStage.listen,
       replySurface: AssistantReplySurface.none,
+      surfaceState: willOpenDrawer
+          ? AssistantSurfaceState.drawerOpen
+          : AssistantSurfaceState.none,
       clearCompactReply: true,
+      clearAnswerCard: true,
       listeningMode: mode,
       listenPartialText: '',
       listenWindowRemainingMs: 0,
@@ -3359,6 +3406,32 @@ class AssistantController extends Notifier<AssistantUiState> {
     }
   }
 
+  Future<void> _speakFullscreenAnswerAndStartDismiss(String text) async {
+    final TtsFacade tts = ref.read(ttsFacadeProvider);
+    final String voice = ref.read(currentTtsVoiceProvider);
+    final double rate = ref.read(currentTtsSpeedProvider);
+    final String speakText = _buildSpeechText(text);
+    if (speakText.isEmpty) {
+      if (_isFullscreenAnswerActive && _answerCardAutoDismisses()) {
+        _startFollowUpWindow();
+      }
+      return;
+    }
+
+    try {
+      await tts.speakAndWaitComplete(speakText, voice: voice, rate: rate);
+    } catch (err) {
+      if (isTtsInterrupted(err)) {
+        return;
+      }
+      state = state.copyWith(ttsError: 'TTS 播报失败：$err');
+    }
+
+    if (_isFullscreenAnswerActive && _answerCardAutoDismisses()) {
+      _startFollowUpWindow();
+    }
+  }
+
   Future<void> replayLatestAssistantReply() async {
     final AssistantMessage latest = state.messages.lastWhere(
       (AssistantMessage message) =>
@@ -3379,6 +3452,42 @@ class AssistantController extends Notifier<AssistantUiState> {
     state = state.copyWith(
       replySurface: AssistantReplySurface.none,
       clearCompactReply: true,
+      surfaceState: AssistantSurfaceState.none,
+      clearAnswerCard: true,
+    );
+  }
+
+  void hideAnswerCard({bool stopSpeaking = true}) {
+    _cancelFollowUpWindow();
+    if (stopSpeaking) {
+      // ignore: discarded_futures
+      ref.read(ttsFacadeProvider).stop();
+    }
+    state = state.copyWith(
+      replySurface: AssistantReplySurface.none,
+      surfaceState: state.drawerOpen
+          ? AssistantSurfaceState.drawerOpen
+          : AssistantSurfaceState.none,
+      clearCompactReply: true,
+      clearAnswerCard: true,
+    );
+  }
+
+  void extendAnswerCardDisplay() {
+    if (!_isFullscreenAnswerActive || !_answerCardAutoDismisses()) {
+      return;
+    }
+    _startFollowUpWindow();
+  }
+
+  void expandAnswerCardToDrawer() {
+    _cancelFollowUpWindow();
+    state = state.copyWith(
+      drawerOpen: true,
+      replySurface: AssistantReplySurface.drawer,
+      surfaceState: AssistantSurfaceState.drawerOpen,
+      clearCompactReply: true,
+      clearAnswerCard: true,
     );
   }
 
@@ -3533,9 +3642,18 @@ class AssistantController extends Notifier<AssistantUiState> {
     final String finalContent = displayContent.text.trim().isEmpty
         ? '我这次没拿到有效结果。'
         : displayContent.text.trim();
-    final AssistantReplySurface surface = const LegacySurfaceRouter().resolve(
+    const LegacySurfaceRouter router = LegacySurfaceRouter();
+    final AssistantReplySurface surface = router.resolve(
       text: finalContent,
       entrySource: _lastEntrySource,
+    );
+    final bool useFullscreenAnswer =
+        surface == AssistantReplySurface.compactCard &&
+        router.shouldUseFullscreenAnswer(_lastEntrySource);
+    final AnswerCardKind answerKind = router.classifyAnswer(
+      state: state,
+      content: displayContent,
+      text: finalContent,
     );
     _replaceTrailingAssistant(
       content: finalContent,
@@ -3545,15 +3663,29 @@ class AssistantController extends Notifier<AssistantUiState> {
     state = state.copyWith(
       stage: AssistantStage.idle,
       drawerOpen: surface == AssistantReplySurface.drawer,
-      replySurface: surface,
-      compactReplyText: surface == AssistantReplySurface.compactCard
+      replySurface: useFullscreenAnswer ? AssistantReplySurface.none : surface,
+      surfaceState: useFullscreenAnswer
+          ? AssistantSurfaceState.fullscreenAnswer
+          : (surface == AssistantReplySurface.drawer
+                ? AssistantSurfaceState.drawerOpen
+                : AssistantSurfaceState.none),
+      answerCardKind: useFullscreenAnswer ? answerKind : null,
+      answerCardText: useFullscreenAnswer ? finalContent : null,
+      answerCardResultCard: useFullscreenAnswer
+          ? displayContent.resultCard
+          : null,
+      clearAnswerCard: !useFullscreenAnswer,
+      compactReplyText:
+          !useFullscreenAnswer && surface == AssistantReplySurface.compactCard
           ? finalContent
           : null,
-      compactReplyCard: surface == AssistantReplySurface.compactCard
+      compactReplyCard:
+          !useFullscreenAnswer && surface == AssistantReplySurface.compactCard
           ? displayContent.resultCard
           : null,
       followUpRemainingMs: 0,
-      clearCompactReply: surface != AssistantReplySurface.compactCard,
+      clearCompactReply:
+          useFullscreenAnswer || surface != AssistantReplySurface.compactCard,
       clearProgress: true,
       clearErrorState: true,
       clearTtsError: true,
@@ -3579,9 +3711,18 @@ class AssistantController extends Notifier<AssistantUiState> {
       }
     }
 
-    if (!shouldSpeak) return;
+    if (!shouldSpeak) {
+      if (useFullscreenAnswer && _answerCardAutoDismisses()) {
+        _startFollowUpWindow();
+      }
+      return;
+    }
 
-    if (surface == AssistantReplySurface.compactCard) {
+    if (useFullscreenAnswer) {
+      // 全屏大卡：播报完成后再启动 5 秒消散计时。
+      // ignore: discarded_futures
+      _speakFullscreenAnswerAndStartDismiss(finalContent);
+    } else if (surface == AssistantReplySurface.compactCard) {
       // 短答卡片：播报 + 5 秒持续对话窗（行为同原版）。
       // ignore: discarded_futures
       _speakCompactReplyAndStartFollowUp(finalContent);
@@ -3589,6 +3730,36 @@ class AssistantController extends Notifier<AssistantUiState> {
       // 抽屉播报：fire-and-forget，不启动持续对话窗（避免抽屉里听到声音
       // 后又要被 5 秒倒计时催着说话，与"深度阅读"姿势冲突）。
       _speakAsync(finalContent);
+    }
+  }
+
+  void _showAssistantError(String message, {AssistantErrorState? errorState}) {
+    final bool useFullscreenAnswer =
+        _lastEntrySource == AssistantEntrySource.quickVoice &&
+        !state.drawerOpen;
+    state = state.copyWith(
+      stage: AssistantStage.error,
+      drawerOpen: useFullscreenAnswer ? false : state.drawerOpen,
+      replySurface: useFullscreenAnswer
+          ? AssistantReplySurface.none
+          : (state.drawerOpen
+                ? AssistantReplySurface.drawer
+                : AssistantReplySurface.none),
+      surfaceState: useFullscreenAnswer
+          ? AssistantSurfaceState.fullscreenAnswer
+          : (state.drawerOpen
+                ? AssistantSurfaceState.drawerOpen
+                : AssistantSurfaceState.none),
+      answerCardKind: useFullscreenAnswer ? AnswerCardKind.error : null,
+      answerCardText: useFullscreenAnswer ? message : null,
+      clearAnswerCard: !useFullscreenAnswer,
+      error: message,
+      errorState: errorState,
+      clearErrorState: errorState == null,
+      clearProgress: true,
+    );
+    if (useFullscreenAnswer) {
+      _startFollowUpWindow();
     }
   }
 
@@ -3682,9 +3853,13 @@ class AssistantController extends Notifier<AssistantUiState> {
       return;
     }
     _nextStartListeningTrigger = trigger;
+    final bool keepDrawerForContinuation =
+        state.drawerOpen ||
+        (state.pendingConfirm != null &&
+            state.surfaceState != AssistantSurfaceState.fullscreenAnswer);
     await startListening(
       source: _lastEntrySource,
-      openDrawer: state.drawerOpen || state.pendingConfirm != null,
+      openDrawer: keepDrawerForContinuation,
       mode: AssistantListeningMode.openMic,
     );
   }
@@ -3786,15 +3961,45 @@ class AssistantController extends Notifier<AssistantUiState> {
     }
   }
 
+  bool get _isFullscreenAnswerActive {
+    return state.surfaceState == AssistantSurfaceState.fullscreenAnswer &&
+        state.answerCardKind != null &&
+        (state.answerCardText?.trim().isNotEmpty == true ||
+            state.answerCardResultCard != null ||
+            state.answerCardKind == AnswerCardKind.confirm);
+  }
+
+  bool _answerCardAutoDismisses() {
+    switch (state.answerCardKind) {
+      case AnswerCardKind.infoCard:
+      case AnswerCardKind.toolFeedback:
+      case AnswerCardKind.plainText:
+      case AnswerCardKind.error:
+        return true;
+      case AnswerCardKind.clarification:
+      case AnswerCardKind.confirm:
+      case AnswerCardKind.reminder:
+      case null:
+        return false;
+    }
+  }
+
+  bool get _hasTimedAnswerSurface {
+    final bool hasCompactReply =
+        state.replySurface == AssistantReplySurface.compactCard &&
+        state.compactReplyText != null &&
+        state.compactReplyText!.trim().isNotEmpty;
+    return hasCompactReply ||
+        (_isFullscreenAnswerActive && _answerCardAutoDismisses());
+  }
+
   void _startFollowUpWindow() {
     _cancelFollowUpWindow();
     state = state.copyWith(
       followUpRemainingMs: _kFollowUpWindow.inMilliseconds,
     );
     _followUpTicker = Timer.periodic(const Duration(milliseconds: 200), (_) {
-      if (state.replySurface != AssistantReplySurface.compactCard ||
-          state.compactReplyText == null ||
-          state.compactReplyText!.trim().isEmpty) {
+      if (!_hasTimedAnswerSurface) {
         _cancelFollowUpWindow();
         return;
       }
@@ -3806,11 +4011,19 @@ class AssistantController extends Notifier<AssistantUiState> {
       );
     });
     _followUpExpireTimer = Timer(_kFollowUpWindow, () {
-      state = state.copyWith(
-        replySurface: AssistantReplySurface.none,
-        clearCompactReply: true,
-        followUpRemainingMs: 0,
-      );
+      if (_isFullscreenAnswerActive) {
+        state = state.copyWith(
+          surfaceState: AssistantSurfaceState.none,
+          clearAnswerCard: true,
+          followUpRemainingMs: 0,
+        );
+      } else {
+        state = state.copyWith(
+          replySurface: AssistantReplySurface.none,
+          clearCompactReply: true,
+          followUpRemainingMs: 0,
+        );
+      }
       _cancelFollowUpWindow(resetState: false);
     });
   }
