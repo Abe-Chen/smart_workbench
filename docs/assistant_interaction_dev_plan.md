@@ -23,7 +23,28 @@
 | 11 | dashboard 看板 | 大卡显示时模糊背景，消散后立即恢复 | 看板被覆盖到打不开 |
 | 12 | 任务编辑器 / 设置页 / 试听按钮 | 完全不动 | 跨页面流断 |
 
-### 0.2 总策略
+### 0.2 设计原则：助手像人
+
+**用户拍板的核心产品原则**（2026-05-12）：
+
+> 助手不应该在自己说话过程中突然中断换话题。人不会在说话的中途切断自己。
+
+这条原则贯穿所有"打断 / 切换 surface"逻辑——所有触发源按"主体"分类：
+
+| 触发源 | 主体 | TTS 是否立刻停 | 大卡是否立刻切 |
+|---|---|---|---|
+| 用户唤醒词 / 长按球 / 点 ✕ / 抽屉里输入 | **用户主动** | ✅ 立即停 | ✅ 立即切 |
+| 紧急提醒到点 | **系统被动** | ❌ **等 TTS 完再播** | ❌ 等 TTS 完再切 |
+| 普通推送 banner | 系统被动 | ❌ 不打断 | ❌ 顶部叠加，不抢主场 |
+| 错误事件 | 系统被动 | ❌ 不打断（可视化呈现）| 错误大卡 5s 后才弹 |
+
+**关键差异**：
+- 用户主动 = 用户已经做出"我要立即响应"的动作 → 系统立即响应
+- 系统被动 = 系统侧的事件 → 必须等当前"对话回合"自然结束（TTS 播完）再切
+
+**极端 case 兜底**：单条 TTS 默认 ≤ 200 字（≈ 15s），紧急提醒最多等 15s。如果未来出现长答复需要等更久，单独立项做"长 TTS 强制打断" 选项。
+
+### 0.3 总策略
 
 - **9 个 phase 渐进迁移**，每 phase 单独 commit、可独立回滚
 - **Phase 1-3 是纯新增**（新组件不接入，旧组件全在）→ 零回归风险
@@ -121,9 +142,10 @@ drawerOpen ──[紧急提醒]───────── ► fullscreenAnswer(
 
 ### 2.3 关键转换说明
 
-**唤醒打断（核心场景）**：
-- 任意状态 → 唤醒触发 → `topBannerListen`
-- 转换时必须执行：`stopTts()` + 当前 surface 平滑淡出
+**用户主动打断（核心场景）**：
+- 任意状态 → 唤醒/长按/点✕ → `topBannerListen` 或 `none`
+- 转换时立即执行：`stopTts()` + 当前 surface 淡出
+- 用户主动动作意味着用户已选择立即响应
 
 **自动续听**（已有 `_speakPromptThenContinueListening`）：
 - `fullscreenAnswer` (TTS 完毕) → 触发续听 → `topBannerListen`
@@ -135,11 +157,16 @@ drawerOpen ──[紧急提醒]───────── ► fullscreenAnswer(
 - 用户主动 ✕ 抽屉后，下一次问答又走大卡
 - 切换原则：用户主动选择"快速模式"（球唤醒）→ 大卡；"沉浸模式"（上滑抽屉）→ 抽屉 inline
 
-**紧急提醒插队**：
-- 提醒触发时不论当前是什么状态都进入 `fullscreenAnswer(reminder)`
+**紧急提醒插队**（按"助手像人"原则）：
+- 提醒触发时**不立即打断当前 TTS**
+- 提醒进入待处理队列 `pendingReminder`
+- 等当前 TTS 自然播完
+- TTS 完毕事件触发后：
+  - 如果有 `pendingReminder` → 当前大卡淡出 + 大卡 3g 接管 + 播提醒 TTS
+  - 如果同时有自动续听窗口 → 提醒优先于续听（提醒 TTS 完后再开麦）
 - 当前大卡内容存到历史（不丢失）
-- 当前 TTS 立停，新 TTS 播提醒
-- 抽屉收起（提醒结束后用户可重新打开看到"被打断"那条）
+- 抽屉打开时同样等 TTS 完才收起 + 弹大卡 3g
+- 极端 case：TTS 超过 30s 仍未播完时打印 warning（不强制打断，等极端 case 真实发生再优化）
 
 ## 3. 7 种大卡形态规格
 
@@ -418,26 +445,39 @@ AnswerCardKind classify(AssistantUiState state, AssistantDisplayContent content)
 | 续听过程中 TTS 没播完用户说话 | TTS 立停 + 大卡淡出 + 顶部浮窗 |
 | 续听过程中用户长按球 | 同上 + 进入 press-to-talk 模式 |
 
-### 6.2 语音打断（核心场景）
+### 6.2 用户主动打断（立即响应）
+
+按 0.2 节"助手像人"原则，**用户主动动作立即停 TTS**。
 
 | 触发 | 当前状态 | 处理 |
 |---|---|---|
-| 唤醒词「小治小治」 | TTS 播报中 | 立刻 stopTts + 大卡淡出 + 顶部浮窗 listen |
-| 唤醒词 | 等 confirm（3e）| 立刻 stopTts + 顶部浮窗 listen，**保留 pendingConfirm**（用户可能说"确认/取消"，也可能说新话题——按 NLU 判断） |
+| 唤醒词「小治小治」 | TTS 播报中 | **立刻 stopTts** + 大卡淡出 + 顶部浮窗 listen |
+| 唤醒词 | 等 confirm（3e）| 立刻 stopTts + 顶部浮窗 listen，**保留 pendingConfirm** |
 | 唤醒词 | 等澄清（3d） | 同上 |
 | 长按球 | 任意 | 立刻 stopTts + 进 press-to-talk |
 | 用户点关闭按钮 ✕ | 任意大卡 | stopTts + 大卡消散 + dashboard 恢复 |
-| 紧急提醒 | TTS 播报中 | 立刻 stopTts + 大卡转场到 3g |
+| 用户在抽屉里输入 | TTS 播报中 | stopTts + 抽屉里追加新问题 |
 
-### 6.3 紧急提醒冲突
+### 6.3 系统被动事件（不打断 TTS，等播完）
+
+按 0.2 节"助手像人"原则，**系统事件等 TTS 自然播完再处理**。
 
 | 当前状态 | 提醒触发 | 处理 |
 |---|---|---|
-| dashboard 满屏 | 紧急提醒 | 直接弹大卡 3g |
-| 顶部 partial（用户在说话）| 紧急提醒 | 顶部浮窗淡出 + 录音停 + 大卡 3g |
-| fullscreenAnswer (3a/3b/3c) | 紧急提醒 | 当前大卡淡出 + 大卡 3g 接管 + TTS 停 |
-| fullscreenAnswer (3e confirm) | 紧急提醒 | 大卡 3g 接管，**pendingConfirm 保留**，提醒结束后回到 3e |
-| drawerOpen | 紧急提醒 | 抽屉收起 + 大卡 3g |
+| dashboard 满屏（无 TTS）| 紧急提醒 | 立即弹大卡 3g |
+| 顶部 partial（用户在说话） | 紧急提醒 | 等用户说完 → 进入大卡 3g（不立即打断用户说话）|
+| fullscreenAnswer (3a/3b/3c) TTS 中 | 紧急提醒 | **不打断 TTS**，进入 `pendingReminder` 队列。TTS 完毕事件后立即弹大卡 3g + 播提醒 TTS |
+| fullscreenAnswer (3a/3b/3c) TTS 已完毕（5s 消散计时中） | 紧急提醒 | 立即转场大卡 3g（无需等待） |
+| fullscreenAnswer (3e confirm) | 紧急提醒 | 等 TTS 完毕 → 大卡转场 3g，**pendingConfirm 保留**，提醒处理完后回到 3e |
+| fullscreenAnswer (3d 澄清) | 紧急提醒 | 等 TTS 完毕 → 大卡转场 3g，澄清状态保留，提醒处理完后回到 3d 重新开麦 |
+| drawerOpen TTS 中 | 紧急提醒 | 等 TTS 完毕 → 抽屉收起 + 大卡 3g |
+| drawerOpen 无 TTS | 紧急提醒 | 立即抽屉收起 + 大卡 3g |
+| topBannerPush | 紧急提醒 | 当前 banner 立即消失 + 大卡 3g 接管（推送 banner 不算"对话回合"，可被打断）|
+
+**实现要点**：
+- 监听 TTS 播放完毕事件（已有 `_player.onPlayerComplete`）
+- 维护 `pendingReminder: ReminderEvent?` 状态
+- TTS 完毕回调 → 检查是否有 `pendingReminder`，有则触发大卡 3g 转场
 
 ### 6.4 推送排队
 
@@ -494,24 +534,15 @@ AnswerCardKind classify(AssistantUiState state, AssistantDisplayContent content)
 | Phase 7 提醒不响 / 反复响 | revert Phase 7，提醒仍走老 notification 通道 |
 | Phase 9 删错 | revert Phase 9，旧代码恢复 |
 
-## 9. 必须在开发前确认的决策点
+## 9. 已拍板的决策点（2026-05-12 用户拍板）
 
-虽然方案大方向已经定，开发前还有几个细节需要拍板：
-
-1. **Phase 8 的 A10**：confirm 等待中被紧急提醒打断 → 提醒处理完是否回到 confirm？
-   - 我倾向 **回到 confirm**（保留状态，避免丢失用户操作）
-
-2. **Phase 6 的 partial 位置**：抽屉打开时 partial 显示在抽屉内还是顶部浮窗？
-   - 我倾向 **抽屉打开 → 抽屉内**（视觉聚焦在抽屉，符合用户主动选择"沉浸模式"）
-
-3. **大卡 3b 工具反馈** 的 undo 按钮位置：卡内 vs 卡底浮层？
-   - 我倾向 **卡内**（视觉简洁，5s 内点即可）
-
-4. **紧急提醒的 TTS 行为**：是否打断当前 TTS？
-   - 我倾向 **打断**（紧急提醒优先）—— 但提供"提醒铃声 + 不语音播报"的设置选项给用户
-
-5. **大卡 3d 澄清** 是否自动开麦？
-   - 我倾向 **自动开麦**（已有 `_speakPromptThenContinueListening` 逻辑，复用）
+| # | 议题 | 决策 |
+|---|---|---|
+| 1 | confirm 等待中被紧急提醒打断后 | **回到 confirm**（保留 pendingConfirm 状态，提醒处理完回到 3e） |
+| 2 | 抽屉打开时 ASR partial 位置 | **抽屉内**（用户已选择"沉浸模式"，partial 跟随主场聚焦） |
+| 3 | 大卡 3b 工具反馈 undo 按钮 | **卡内**（视觉简洁，5s 内点即可） |
+| 4 | 紧急提醒是否打断当前 TTS | **不打断**，等 TTS 播完再播报。"助手像人，不会在说话过程中突然换话题"——这条原则提到 0.2 设计原则层级，贯穿所有打断逻辑 |
+| 5 | 大卡 3d 澄清是否自动开麦 | **自动开麦**（复用 `_speakPromptThenContinueListening`） |
 
 ## 10. 关联文档
 
