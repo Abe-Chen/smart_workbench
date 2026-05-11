@@ -1,3 +1,5 @@
+import 'chinese_filler_stripper.dart';
+
 /// 任务理解层提取出的槽位。所有字段都允许为 null：
 /// 这一层做"能识别明显的就识别"，识别不出来交给下游模型自己处理，
 /// 不强行猜。后续 W3b 接写入工具时再决定哪些槽位"必须有"。
@@ -65,7 +67,8 @@ class AssistantSlots {
   /// - 不识别就 null；不要为了"识别更多"而引入误判
   /// - 识别失败完全不影响下游路由分支（这是 W3a 纯增量版的承诺）
   static AssistantSlots from(String text) {
-    final String t = text.trim();
+    // 先剥离前导语气词，避免"嗯，明天 3 点开会"中"嗯"污染 title 抽取与 router 判断
+    final String t = stripChineseFillers(text, leadingOnly: true).trim();
     if (t.isEmpty) return empty;
 
     return AssistantSlots(

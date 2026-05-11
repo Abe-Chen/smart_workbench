@@ -9,6 +9,7 @@ class EnvConfig {
     required this.xfApiKey,
     required this.xfApiSecret,
     required this.amapKey,
+    required this.volcTtsApiKey,
   });
 
   factory EnvConfig.fromDotEnv() {
@@ -20,6 +21,7 @@ class EnvConfig {
       xfApiKey: read('XF_API_KEY'),
       xfApiSecret: read('XF_API_SECRET'),
       amapKey: read('AMAP_KEY'),
+      volcTtsApiKey: read('VOLC_TTS_API_KEY'),
     );
   }
 
@@ -29,6 +31,7 @@ class EnvConfig {
   final String xfApiKey;
   final String xfApiSecret;
   final String amapKey;
+  final String volcTtsApiKey;
 
   bool get hasDoubaoCredentials =>
       volcArkApiKey.isNotEmpty && doubaoEndpointId.isNotEmpty;
@@ -37,6 +40,8 @@ class EnvConfig {
       xfAppId.isNotEmpty && xfApiKey.isNotEmpty && xfApiSecret.isNotEmpty;
 
   bool get hasAmapCredentials => amapKey.isNotEmpty;
+
+  bool get hasVolcTtsCredentials => volcTtsApiKey.isNotEmpty;
 }
 
 final Provider<EnvConfig> envConfigProvider = Provider<EnvConfig>(

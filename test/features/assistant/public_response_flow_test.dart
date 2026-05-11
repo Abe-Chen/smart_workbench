@@ -394,6 +394,7 @@ class _FakeDoubaoResponsesClient extends DoubaoResponsesClient {
           xfApiKey: '',
           xfApiSecret: '',
           amapKey: '',
+          volcTtsApiKey: '',
         ),
       );
 

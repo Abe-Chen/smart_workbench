@@ -1,4 +1,26 @@
-const String kDefaultTtsVoice = 'x6_lingxiaoxuan_pro';
+/// TTS 服务商。
+enum TtsProvider {
+  volc, // 火山引擎豆包语音合成 2.0（主路径）
+  xunfei; // 讯飞超拟人（fallback / 备用）
+
+  static TtsProvider fromVoiceCode(String code) {
+    // 讯飞音色 code 形如 x6_*/x5_*；火山音色没有这两种前缀。
+    if (code.startsWith('x6_') || code.startsWith('x5_')) {
+      return TtsProvider.xunfei;
+    }
+    return TtsProvider.volc;
+  }
+}
+
+/// 火山豆包 TTS 2.0 的 X-Api-Resource-Id，按音色前缀路由。
+String volcResourceIdForVoice(String code) {
+  // saturn_ 前缀的是声音复刻 2.0（ICL）音色，必须用 seed-icl-2.0 资源
+  if (code.startsWith('saturn_')) return 'seed-icl-2.0';
+  // 其他火山音色走主 TTS 资源
+  return 'seed-tts-2.0';
+}
+
+const String kDefaultTtsVoice = 'zh_female_xiaohe_uranus_bigtts';
 
 /// 播报模式，决定小治回答时是否自动出声。
 ///
@@ -121,30 +143,42 @@ class TtsVoiceOption {
 }
 
 const List<TtsVoiceOption> kTtsVoiceOptions = <TtsVoiceOption>[
+  // —— 豆包语音合成 2.0（主路径，需要在火山控制台音色管理里授权）——
+  TtsVoiceOption(
+    code: 'zh_female_xiaohe_uranus_bigtts',
+    label: '小荷',
+    description: '默认女声，自然柔和，适合日常对话',
+  ),
+  TtsVoiceOption(
+    code: 'zh_male_liufei_uranus_bigtts',
+    label: '刘飞',
+    description: '沉稳男声，适合提醒和播报',
+  ),
+  TtsVoiceOption(
+    code: 'saturn_zh_female_qingyingduoduo_cs_tob',
+    label: '轻盈朵朵',
+    description: '知性活力的女老师（声音复刻 2.0）',
+  ),
+  TtsVoiceOption(
+    code: 'zh_female_vv_uranus_bigtts',
+    label: 'Vivi',
+    description: '语调平稳、咬字柔和的女声',
+  ),
+  TtsVoiceOption(
+    code: 'zh_male_m191_uranus_bigtts',
+    label: '云舟',
+    description: '声音磁性的男生',
+  ),
+  TtsVoiceOption(
+    code: 'zh_male_shaonianzixin_uranus_bigtts',
+    label: '少年自信',
+    description: '少年感十足的清爽男生',
+  ),
+  // —— 讯飞超拟人（备用 / fallback）——
   TtsVoiceOption(
     code: 'x6_lingxiaoxuan_pro',
-    label: '聆小璇',
-    description: '女声，偏自然柔和，适合日常问答',
-  ),
-  TtsVoiceOption(
-    code: 'x5_lingyuzhao_flow',
-    label: '聆玉昭',
-    description: '女声，衔接自然，连续播报更顺',
-  ),
-  TtsVoiceOption(
-    code: 'x6_lingxiaoyue_pro',
-    label: '聆小玥',
-    description: '女声，偏温和，听感更轻柔',
-  ),
-  TtsVoiceOption(
-    code: 'x6_lingyuyan_pro',
-    label: '聆玉言',
-    description: '女声，吐字清晰，偏稳重',
-  ),
-  TtsVoiceOption(
-    code: 'x6_lingfeiyi_pro',
-    label: '聆飞逸',
-    description: '男声，偏沉稳，适合提醒和播报',
+    label: '聆小璇（讯飞备用）',
+    description: '讯飞女声，火山服务异常时自动降级使用',
   ),
 ];
 

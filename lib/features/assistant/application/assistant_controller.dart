@@ -16,7 +16,10 @@ import '../../task/domain/task.dart';
 import '../data/doubao_chat_client.dart';
 import '../data/doubao_responses_client.dart';
 import '../data/xunfei_asr_client.dart';
+import '../data/tts_facade.dart';
+import '../data/volc_tts_client.dart';
 import '../data/xunfei_tts_client.dart';
+import '../domain/chinese_filler_stripper.dart';
 import '../domain/assistant_execution_mode.dart';
 import '../../settings/application/app_settings_controller.dart';
 import '../../settings/domain/app_settings.dart';
@@ -183,8 +186,13 @@ class AssistantController extends Notifier<AssistantUiState> {
     AssistantEntrySource source = AssistantEntrySource.drawerText,
     bool allowVoiceContinuation = false,
   }) async {
-    final String trimmed = text.trim();
-    if (trimmed.isEmpty) return;
+    // 入口统一剥离前导/后置语气词（"嗯，明天 3 点开会" → "明天 3 点开会"），
+    // 让所有下游消费（历史展示、router 判断、模型输入）都拿到干净文本。
+    // 全是 filler 时（如用户只说"嗯"）保留原文，让上层判定为单字 confirm 等。
+    final String original = text.trim();
+    if (original.isEmpty) return;
+    final String stripped = stripChineseFillers(original).trim();
+    final String trimmed = stripped.isEmpty ? original : stripped;
     _cancelVoiceContinuation();
     _voiceContinuationAllowedForCurrentTurn =
         allowVoiceContinuation && source != AssistantEntrySource.drawerText;
@@ -975,15 +983,26 @@ class AssistantController extends Notifier<AssistantUiState> {
   }
 
   _PendingConfirmInputAction _parsePendingConfirmInput(String text) {
-    final String normalized = text.trim().replaceAll(RegExp(r'[，。！？\s]'), '');
-    if (normalized.isEmpty) {
+    final String s = _normalizeForIntentMatch(text);
+    if (s.isEmpty) {
       return _PendingConfirmInputAction.unknown;
     }
-    if (_confirmInputPattern.hasMatch(normalized)) {
+    // 1. 显式否定 + confirm 词（"不确认" / "不可以" / "不行"），算 cancel
+    if (_negatedConfirmPattern.hasMatch(s)) {
+      return _PendingConfirmInputAction.cancel;
+    }
+    // 2. cancel / close 优先（"算了吧" / "就这样" / "不用了"）
+    if (_cancelInputPattern.hasMatch(s) ||
+        _conversationCloseInputPattern.hasMatch(s)) {
+      return _PendingConfirmInputAction.cancel;
+    }
+    // 3. confirm 单字白名单（完全相等才算，避免"好烦"误判）
+    if (_singleConfirmPattern.hasMatch(s)) {
       return _PendingConfirmInputAction.confirm;
     }
-    if (_isCancelOrCloseInput(normalized)) {
-      return _PendingConfirmInputAction.cancel;
+    // 4. confirm 多字 contains（"嗯，确认" → strip → "确认" → 命中）
+    if (_multiConfirmPattern.hasMatch(s)) {
+      return _PendingConfirmInputAction.confirm;
     }
     return _PendingConfirmInputAction.unknown;
   }
@@ -3075,7 +3094,7 @@ class AssistantController extends Notifier<AssistantUiState> {
     if (muted) {
       // 立即停掉正在播的内容
       // ignore: discarded_futures
-      ref.read(xunfeiTtsClientProvider).stop();
+      ref.read(ttsFacadeProvider).stop();
     }
   }
 
@@ -3096,7 +3115,7 @@ class AssistantController extends Notifier<AssistantUiState> {
     if (state.stage == AssistantStage.listen) return;
     _cancelVoiceContinuation();
     final bool hasPendingConfirm = state.pendingConfirm != null;
-    await ref.read(xunfeiTtsClientProvider).stop();
+    await ref.read(ttsFacadeProvider).stop();
     _cancelFollowUpWindow();
     _cancelOpenMicWait();
     _listeningSource = source;
@@ -3293,7 +3312,7 @@ class AssistantController extends Notifier<AssistantUiState> {
   }
 
   void _speakAsync(String text) {
-    final XunfeiTtsClient tts = ref.read(xunfeiTtsClientProvider);
+    final TtsFacade tts = ref.read(ttsFacadeProvider);
     final String voice = ref.read(currentTtsVoiceProvider);
     final double rate = ref.read(currentTtsSpeedProvider);
     final String speakText = _buildSpeechText(text);
@@ -3301,19 +3320,17 @@ class AssistantController extends Notifier<AssistantUiState> {
       return;
     }
     // ignore: discarded_futures
-    tts
-        .speak(speakText, voice: voice, xunfeiSpeed: xunfeiSpeedForRate(rate))
-        .catchError((Object err) {
-          if (err is XunfeiTtsException && err.message == '被中断') {
-            return;
-          }
-          // TTS 失败不影响对话流程，记到独立的 ttsError 通道。
-          state = state.copyWith(ttsError: 'TTS 播报失败：$err');
-        });
+    tts.speak(speakText, voice: voice, rate: rate).catchError((Object err) {
+      if (isTtsInterrupted(err)) {
+        return;
+      }
+      // TTS 失败不影响对话流程，记到独立的 ttsError 通道。
+      state = state.copyWith(ttsError: 'TTS 播报失败：$err');
+    });
   }
 
   Future<void> _speakCompactReplyAndStartFollowUp(String text) async {
-    final XunfeiTtsClient tts = ref.read(xunfeiTtsClientProvider);
+    final TtsFacade tts = ref.read(ttsFacadeProvider);
     final String voice = ref.read(currentTtsVoiceProvider);
     final double rate = ref.read(currentTtsSpeedProvider);
     final String speakText = _buildSpeechText(text);
@@ -3323,13 +3340,9 @@ class AssistantController extends Notifier<AssistantUiState> {
     }
 
     try {
-      await tts.speakAndWaitComplete(
-        speakText,
-        voice: voice,
-        xunfeiSpeed: xunfeiSpeedForRate(rate),
-      );
+      await tts.speakAndWaitComplete(speakText, voice: voice, rate: rate);
     } catch (err) {
-      if (err is XunfeiTtsException && err.message == '被中断') {
+      if (isTtsInterrupted(err)) {
         return;
       }
       state = state.copyWith(ttsError: 'TTS 播报失败：$err');
@@ -3676,17 +3689,13 @@ class AssistantController extends Notifier<AssistantUiState> {
       sessionMute: state.sessionMute,
     );
     if (shouldSpeak && speakText.isNotEmpty) {
-      final XunfeiTtsClient tts = ref.read(xunfeiTtsClientProvider);
+      final TtsFacade tts = ref.read(ttsFacadeProvider);
       final String voice = ref.read(currentTtsVoiceProvider);
       final double rate = ref.read(currentTtsSpeedProvider);
       try {
-        await tts.speakAndWaitComplete(
-          speakText,
-          voice: voice,
-          xunfeiSpeed: xunfeiSpeedForRate(rate),
-        );
+        await tts.speakAndWaitComplete(speakText, voice: voice, rate: rate);
       } catch (err) {
-        if (err is XunfeiTtsException && err.message == '被中断') {
+        if (isTtsInterrupted(err)) {
           return;
         }
         state = state.copyWith(ttsError: 'TTS 播报失败：$err');
@@ -4159,14 +4168,24 @@ bool _isProactiveSuggestionDismissInput(String text) {
 }
 
 bool _isCancelOrCloseInput(String text) {
-  final String normalized = text.trim().replaceAll(RegExp(r'[，。！？,.!?\s]'), '');
-  return _cancelInputPattern.hasMatch(normalized) ||
-      _conversationCloseInputPattern.hasMatch(normalized);
+  final String s = _normalizeForIntentMatch(text);
+  if (s.isEmpty) return false;
+  return _cancelInputPattern.hasMatch(s) ||
+      _conversationCloseInputPattern.hasMatch(s);
 }
 
 bool _isConversationCloseInput(String text) {
-  final String normalized = text.trim().replaceAll(RegExp(r'[，。！？,.!?\s]'), '');
-  return _conversationCloseInputPattern.hasMatch(normalized);
+  final String s = _normalizeForIntentMatch(text);
+  if (s.isEmpty) return false;
+  return _conversationCloseInputPattern.hasMatch(s);
+}
+
+/// 给 confirm/cancel/close 三类意图识别共用的文本规整：
+/// 1) [stripChineseFillers] 剥前后语气词 + 礼貌前缀
+/// 2) 去标点空白
+String _normalizeForIntentMatch(String text) {
+  final String stripped = stripChineseFillers(text);
+  return stripped.replaceAll(RegExp(r'[，。！？,.!?\s、；;:：]'), '');
 }
 
 _VoiceCommandText _normalizeVoiceCommandText(String raw) {
@@ -4380,14 +4399,32 @@ int? _parseInt(Object? raw) {
   return null;
 }
 
-final RegExp _confirmInputPattern = RegExp(
-  r'^(确认|可以|好|好的|对|是|没错|执行|创建|确定|行|嗯|嗯嗯)$',
+/// confirm 单字白名单：剥语气词与标点后**完全等于**这些 token 才算 confirm。
+/// 避免"好烦"中的"好"被 contains 模式误判。
+final RegExp _singleConfirmPattern = RegExp(
+  r'^(对|是|好|行|嗯|嗯嗯|嗯啊|嗯哼)$',
 );
+
+/// confirm 多字关键词：剥语气词与标点后**包含**这些子串就算 confirm。
+/// 必须 ≥ 2 字，避免单字误判。
+final RegExp _multiConfirmPattern = RegExp(
+  r'(确认|确定|可以|好的|没错|是的|对的|执行|创建|建立|添加|加上|安排)',
+);
+
+/// 显式否定 + confirm 关键词，识别为 cancel。
+/// 锚定开头（^），避免"我不行"这种被误匹配——后者由其他逻辑兜底。
+final RegExp _negatedConfirmPattern = RegExp(
+  r'^(不|别|不要|不想)(确认|确定|可以|好|好的|执行|创建|行|是|对|要)',
+);
+
+/// cancel 关键词 contains 模式（必须 ≥ 2 字，避免"不"单字误判其它正常表达）。
 final RegExp _cancelInputPattern = RegExp(
-  r'^(取消|不用|不用了|算了|先不|先不用|不要|别|撤销|放弃)$',
+  r'(取消|不用|算了|撤销|放弃|不要|先不)',
 );
+
+/// close 关键词 contains 模式（"好了/就这样/可以了"等收尾表达）。
 final RegExp _conversationCloseInputPattern = RegExp(
-  r'^(好了|好啦|好了就这样|好了就这样吧|好啦就这样|好啦就这样吧|就这样|就这样吧|先这样|先这样吧|没事了|结束|可以了)$',
+  r'(好了|好啦|就这样|先这样|没事了|结束|可以了)',
 );
 final RegExp _wakeWordOnlyPattern = RegExp(r'^(小治小治|小智小智|小治|小智)+$');
 final RegExp _leadingWakeWordPattern = RegExp(
@@ -4828,6 +4865,9 @@ String _userFacingErrorMessage(Object error) {
     return error.message;
   }
   if (error is XunfeiTtsException) {
+    return error.message;
+  }
+  if (error is VolcTtsException) {
     return error.message;
   }
   return error.toString();

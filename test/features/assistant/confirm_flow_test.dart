@@ -14,6 +14,7 @@ import 'package:smart_workbench/features/assistant/application/tool_registry.dar
 import 'package:smart_workbench/features/assistant/data/doubao_chat_client.dart';
 import 'package:smart_workbench/features/assistant/data/doubao_responses_client.dart';
 import 'package:smart_workbench/features/assistant/data/xunfei_asr_client.dart';
+import 'package:smart_workbench/features/assistant/data/volc_tts_client.dart';
 import 'package:smart_workbench/features/assistant/data/xunfei_tts_client.dart';
 import 'package:smart_workbench/features/assistant/domain/assistant_confirm_preview.dart';
 import 'package:smart_workbench/features/assistant/domain/assistant_execution_mode.dart';
@@ -56,6 +57,7 @@ void main() {
           toolRegistryProvider.overrideWithValue(
             ToolRegistry(<AssistantTool>[tool]),
           ),
+          volcTtsClientProvider.overrideWithValue(_FakeVolcTtsClient()),
           currentTtsPlaybackModeProvider.overrideWithValue(
             TtsPlaybackMode.silent,
           ),
@@ -124,6 +126,7 @@ void main() {
           toolRegistryProvider.overrideWithValue(
             ToolRegistry(<AssistantTool>[tool]),
           ),
+          volcTtsClientProvider.overrideWithValue(_FakeVolcTtsClient()),
           currentTtsPlaybackModeProvider.overrideWithValue(
             TtsPlaybackMode.silent,
           ),
@@ -173,6 +176,7 @@ void main() {
           toolRegistryProvider.overrideWithValue(
             ToolRegistry(<AssistantTool>[tool]),
           ),
+          volcTtsClientProvider.overrideWithValue(_FakeVolcTtsClient()),
           currentTtsPlaybackModeProvider.overrideWithValue(
             TtsPlaybackMode.silent,
           ),
@@ -217,6 +221,7 @@ void main() {
           toolRegistryProvider.overrideWithValue(
             ToolRegistry(<AssistantTool>[tool]),
           ),
+          volcTtsClientProvider.overrideWithValue(_FakeVolcTtsClient()),
           currentTtsPlaybackModeProvider.overrideWithValue(
             TtsPlaybackMode.silent,
           ),
@@ -267,6 +272,7 @@ void main() {
           toolRegistryProvider.overrideWithValue(
             ToolRegistry(<AssistantTool>[tool]),
           ),
+          volcTtsClientProvider.overrideWithValue(_FakeVolcTtsClient()),
           currentTtsPlaybackModeProvider.overrideWithValue(
             TtsPlaybackMode.silent,
           ),
@@ -322,6 +328,7 @@ void main() {
           toolRegistryProvider.overrideWithValue(
             ToolRegistry(<AssistantTool>[tool]),
           ),
+          volcTtsClientProvider.overrideWithValue(_FakeVolcTtsClient()),
           currentTtsPlaybackModeProvider.overrideWithValue(
             TtsPlaybackMode.silent,
           ),
@@ -362,6 +369,7 @@ void main() {
           toolRegistryProvider.overrideWithValue(
             ToolRegistry(<AssistantTool>[createTool]),
           ),
+          volcTtsClientProvider.overrideWithValue(_FakeVolcTtsClient()),
           currentTtsPlaybackModeProvider.overrideWithValue(
             TtsPlaybackMode.silent,
           ),
@@ -411,6 +419,7 @@ void main() {
           toolRegistryProvider.overrideWithValue(
             ToolRegistry(<AssistantTool>[tool]),
           ),
+          volcTtsClientProvider.overrideWithValue(_FakeVolcTtsClient()),
           currentTtsPlaybackModeProvider.overrideWithValue(
             TtsPlaybackMode.silent,
           ),
@@ -446,6 +455,7 @@ void main() {
           toolRegistryProvider.overrideWithValue(
             ToolRegistry(<AssistantTool>[tool]),
           ),
+          volcTtsClientProvider.overrideWithValue(_FakeVolcTtsClient()),
           currentTtsPlaybackModeProvider.overrideWithValue(
             TtsPlaybackMode.silent,
           ),
@@ -483,6 +493,7 @@ void main() {
           toolRegistryProvider.overrideWithValue(
             ToolRegistry(<AssistantTool>[tool]),
           ),
+          volcTtsClientProvider.overrideWithValue(_FakeVolcTtsClient()),
           currentTtsPlaybackModeProvider.overrideWithValue(
             TtsPlaybackMode.silent,
           ),
@@ -524,6 +535,7 @@ void main() {
           toolRegistryProvider.overrideWithValue(
             ToolRegistry(<AssistantTool>[createTool, updateTool]),
           ),
+          volcTtsClientProvider.overrideWithValue(_FakeVolcTtsClient()),
           currentTtsPlaybackModeProvider.overrideWithValue(
             TtsPlaybackMode.silent,
           ),
@@ -567,6 +579,7 @@ void main() {
           toolRegistryProvider.overrideWithValue(
             ToolRegistry(<AssistantTool>[tool]),
           ),
+          volcTtsClientProvider.overrideWithValue(_FakeVolcTtsClient()),
           currentTtsPlaybackModeProvider.overrideWithValue(
             TtsPlaybackMode.silent,
           ),
@@ -614,7 +627,8 @@ void main() {
             toolRegistryProvider.overrideWithValue(
               ToolRegistry(<AssistantTool>[tool]),
             ),
-            currentTtsPlaybackModeProvider.overrideWithValue(
+            volcTtsClientProvider.overrideWithValue(_FakeVolcTtsClient()),
+          currentTtsPlaybackModeProvider.overrideWithValue(
               TtsPlaybackMode.silent,
             ),
           ],
@@ -652,6 +666,7 @@ void main() {
           toolRegistryProvider.overrideWithValue(
             ToolRegistry(<AssistantTool>[createTool]),
           ),
+          volcTtsClientProvider.overrideWithValue(_FakeVolcTtsClient()),
           currentTtsPlaybackModeProvider.overrideWithValue(
             TtsPlaybackMode.silent,
           ),
@@ -695,6 +710,7 @@ void main() {
           toolRegistryProvider.overrideWithValue(
             ToolRegistry(<AssistantTool>[tool]),
           ),
+          volcTtsClientProvider.overrideWithValue(_FakeVolcTtsClient()),
           currentTtsPlaybackModeProvider.overrideWithValue(
             TtsPlaybackMode.silent,
           ),
@@ -737,6 +753,7 @@ void main() {
           toolRegistryProvider.overrideWithValue(
             ToolRegistry(<AssistantTool>[queryTool]),
           ),
+          volcTtsClientProvider.overrideWithValue(_FakeVolcTtsClient()),
           currentTtsPlaybackModeProvider.overrideWithValue(
             TtsPlaybackMode.silent,
           ),
@@ -775,6 +792,7 @@ void main() {
           toolRegistryProvider.overrideWithValue(
             ToolRegistry(<AssistantTool>[queryTool]),
           ),
+          volcTtsClientProvider.overrideWithValue(_FakeVolcTtsClient()),
           currentTtsPlaybackModeProvider.overrideWithValue(
             TtsPlaybackMode.silent,
           ),
@@ -819,6 +837,7 @@ void main() {
           toolRegistryProvider.overrideWithValue(
             ToolRegistry(<AssistantTool>[queryTool, updateTool]),
           ),
+          volcTtsClientProvider.overrideWithValue(_FakeVolcTtsClient()),
           currentTtsPlaybackModeProvider.overrideWithValue(
             TtsPlaybackMode.silent,
           ),
@@ -862,6 +881,7 @@ void main() {
           toolRegistryProvider.overrideWithValue(
             ToolRegistry(<AssistantTool>[queryTool, updateTool]),
           ),
+          volcTtsClientProvider.overrideWithValue(_FakeVolcTtsClient()),
           currentTtsPlaybackModeProvider.overrideWithValue(
             TtsPlaybackMode.silent,
           ),
@@ -931,6 +951,7 @@ void main() {
           toolRegistryProvider.overrideWithValue(
             ToolRegistry(<AssistantTool>[queryTool, updateTool]),
           ),
+          volcTtsClientProvider.overrideWithValue(_FakeVolcTtsClient()),
           currentTtsPlaybackModeProvider.overrideWithValue(
             TtsPlaybackMode.silent,
           ),
@@ -1000,6 +1021,7 @@ void main() {
           toolRegistryProvider.overrideWithValue(
             ToolRegistry(<AssistantTool>[queryTool, updateTool]),
           ),
+          volcTtsClientProvider.overrideWithValue(_FakeVolcTtsClient()),
           currentTtsPlaybackModeProvider.overrideWithValue(
             TtsPlaybackMode.silent,
           ),
@@ -1044,6 +1066,7 @@ void main() {
           toolRegistryProvider.overrideWithValue(
             ToolRegistry(<AssistantTool>[queryTool, deleteTool]),
           ),
+          volcTtsClientProvider.overrideWithValue(_FakeVolcTtsClient()),
           currentTtsPlaybackModeProvider.overrideWithValue(
             TtsPlaybackMode.silent,
           ),
@@ -1077,6 +1100,7 @@ void main() {
           toolRegistryProvider.overrideWithValue(
             ToolRegistry(<AssistantTool>[tool]),
           ),
+          volcTtsClientProvider.overrideWithValue(_FakeVolcTtsClient()),
           currentTtsPlaybackModeProvider.overrideWithValue(
             TtsPlaybackMode.silent,
           ),
@@ -1117,6 +1141,7 @@ void main() {
           toolRegistryProvider.overrideWithValue(
             ToolRegistry(<AssistantTool>[tool]),
           ),
+          volcTtsClientProvider.overrideWithValue(_FakeVolcTtsClient()),
           currentTtsPlaybackModeProvider.overrideWithValue(
             TtsPlaybackMode.silent,
           ),
@@ -1167,6 +1192,7 @@ void main() {
           xunfeiAsrClientFactoryProvider.overrideWithValue(
             ({int vadEosMs = 2000}) => asr,
           ),
+          volcTtsClientProvider.overrideWithValue(_FakeVolcTtsClient()),
           currentTtsPlaybackModeProvider.overrideWithValue(
             TtsPlaybackMode.silent,
           ),
@@ -1205,6 +1231,7 @@ void main() {
           xunfeiAsrClientFactoryProvider.overrideWithValue(
             ({int vadEosMs = 2000}) => asr,
           ),
+          volcTtsClientProvider.overrideWithValue(_FakeVolcTtsClient()),
           currentTtsPlaybackModeProvider.overrideWithValue(
             TtsPlaybackMode.silent,
           ),
@@ -1243,6 +1270,7 @@ void main() {
           toolRegistryProvider.overrideWithValue(
             ToolRegistry(<AssistantTool>[tool]),
           ),
+          volcTtsClientProvider.overrideWithValue(_FakeVolcTtsClient()),
           currentTtsPlaybackModeProvider.overrideWithValue(
             TtsPlaybackMode.silent,
           ),
@@ -1292,6 +1320,7 @@ void main() {
       final ProviderContainer container = ProviderContainer(
         overrides: <Override>[
           doubaoChatClientProvider.overrideWithValue(chat),
+          volcTtsClientProvider.overrideWithValue(_FakeVolcTtsClient()),
           currentTtsPlaybackModeProvider.overrideWithValue(
             TtsPlaybackMode.silent,
           ),
@@ -1345,6 +1374,7 @@ void main() {
           toolRegistryProvider.overrideWithValue(
             ToolRegistry(<AssistantTool>[tool]),
           ),
+          volcTtsClientProvider.overrideWithValue(_FakeVolcTtsClient()),
           currentTtsPlaybackModeProvider.overrideWithValue(
             TtsPlaybackMode.silent,
           ),
@@ -1436,6 +1466,28 @@ class _FakeXunfeiAsrClient implements XunfeiAsrClient {
   void emit(AsrEvent event) {
     _events.add(event);
   }
+}
+
+class _FakeVolcTtsClient implements VolcTtsClient {
+  @override
+  Future<void> stop() async {}
+
+  @override
+  Future<void> speak(
+    String text, {
+    required String voice,
+    int speedRate = 0,
+  }) async {}
+
+  @override
+  Future<void> speakAndWaitComplete(
+    String text, {
+    required String voice,
+    int speedRate = 0,
+  }) async {}
+
+  @override
+  Future<void> dispose() async {}
 }
 
 class _FakeXunfeiTtsClient implements XunfeiTtsClient {
@@ -1710,6 +1762,7 @@ class _FakeImmediateResponsesClient extends DoubaoResponsesClient {
           xfApiKey: '',
           xfApiSecret: '',
           amapKey: '',
+          volcTtsApiKey: '',
         ),
       );
 
@@ -1744,6 +1797,7 @@ class _FakeDoubaoChatClient extends DoubaoChatClient {
           xfApiKey: '',
           xfApiSecret: '',
           amapKey: '',
+          volcTtsApiKey: '',
         ),
       );
 

@@ -4,7 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../app/theme.dart';
 import '../../../core/config/env_config.dart';
 import '../../../core/voice/voice_wakeup_service.dart';
-import '../../assistant/data/xunfei_tts_client.dart';
+import '../../assistant/data/tts_facade.dart';
 import '../application/about_info_provider.dart';
 import '../application/app_settings_controller.dart';
 import '../domain/app_settings.dart';
@@ -444,11 +444,11 @@ class _TtsVoiceSectionState extends ConsumerState<_TtsVoiceSection> {
     try {
       final double rate = ref.read(currentTtsSpeedProvider);
       await ref
-          .read(xunfeiTtsClientProvider)
+          .read(ttsFacadeProvider)
           .speak(
-            '你好，我是小治。现在试听的是${option.label}。当前参数是${option.code}。',
+            '你好，我是小治。现在试听的是${option.label}。',
             voice: option.code,
-            xunfeiSpeed: xunfeiSpeedForRate(rate),
+            rate: rate,
           );
     } catch (error) {
       messenger.hideCurrentSnackBar();

@@ -91,7 +91,7 @@ void main() {
         remindersEnabled: false,
         showCompleted: true,
         showLunar: false,
-        ttsVoice: 'x5_lingyuzhao_flow',
+        ttsVoice: 'zh_male_liufei_uranus_bigtts',
         ttsPlaybackMode: TtsPlaybackMode.silent,
         ttsSpeed: 1.5,
       );
@@ -100,7 +100,7 @@ void main() {
       expect(s2.remindersEnabled, false);
       expect(s2.showCompleted, true);
       expect(s2.showLunar, false);
-      expect(s2.ttsVoice, 'x5_lingyuzhao_flow');
+      expect(s2.ttsVoice, 'zh_male_liufei_uranus_bigtts');
       expect(s2.ttsPlaybackMode, TtsPlaybackMode.silent);
       expect(s2.ttsSpeed, 1.5);
     });
