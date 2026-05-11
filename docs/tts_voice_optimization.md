@@ -1,7 +1,32 @@
 # 语音音色优化方案
 
-最近更新：2026-05-10。
-状态：调研完成，等真机复现 11200 错误码 + 用户决策方向。
+最近更新：2026-05-11。
+状态：**Stage B 已落地** — 火山豆包语音合成 2.0 通过 WebSocket V3 双向流式接入，讯飞作为 fallback 保留。**真机验证：音色可以，6 个火山音色 + 1 个讯飞备用切换正常**。
+
+## 实施结果
+
+| Stage | 描述 | 状态 |
+|---|---|---|
+| A 止损 | 调讯飞参数 + 试听按钮 + 切换提示 | ⏸️ 跳过（直接做 B 一步到位）|
+| **B 接火山引擎 TTS** | 豆包 2.0 主路径 + 讯飞 fallback | ✅ **已落地，真机过** |
+| C 流式 + 情感 | 边吐字边合成、按对话情绪选 prosody | 暂未启动 |
+| D 音色克隆 | 用户自定义音色 | 暂未启动 |
+
+## 当前架构（落地版）
+
+- **主 TTS**：豆包语音合成大模型 2.0（Seed-TTS 2.0），WebSocket V3 双向流式，URL `wss://openspeech.bytedance.com/api/v3/tts/bidirection`，新版鉴权 `X-Api-Key + X-Api-Resource-Id`
+- **音色路由**：`saturn_*` 前缀走 `seed-icl-2.0` 资源（声音复刻 2.0），其他走 `seed-tts-2.0`
+- **音色清单**（6 个火山主推 + 1 个讯飞备用）：小荷 / 刘飞 / 轻盈朵朵 / Vivi / 云舟 / 少年自信 / 聆小璇（讯飞备用）
+- **Fallback 机制**：`TtsFacade` 在火山失败时自动降级到讯飞默认音色（聆小璇），用户无感
+- **音频参数**：mp3 / 24000 Hz / 128 kbps（讯飞之前是 16000Hz mp3）
+
+## 关键代码位置
+
+- `lib/features/assistant/data/volc_tts_client.dart` — 火山豆包 WebSocket V3 实现（含二进制帧编解码、12 种 event 状态机）
+- `lib/features/assistant/data/tts_facade.dart` — 按音色路由 + 失败 fallback
+- `lib/features/settings/domain/app_settings.dart` — 音色清单 + `TtsProvider` enum + `volcResourceIdForVoice` 路由函数
+- `lib/core/config/env_config.dart` — `volcTtsApiKey` 字段
+- `.env` — `VOLC_TTS_API_KEY`
 
 ## 用户反馈
 
