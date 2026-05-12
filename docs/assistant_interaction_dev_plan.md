@@ -551,6 +551,7 @@ AnswerCardKind classify(AssistantUiState state, AssistantDisplayContent content)
 | 3 | 大卡 3b 工具反馈 undo 按钮 | **卡内**（视觉简洁，5s 内点即可） |
 | 4 | 紧急提醒是否打断当前 TTS | **不打断**，等 TTS 播完再播报。"助手像人，不会在说话过程中突然换话题"——这条原则提到 0.2 设计原则层级，贯穿所有打断逻辑 |
 | 5 | 大卡 3d 澄清是否自动开麦 | **自动开麦**（复用 `_speakPromptThenContinueListening`） |
+| 6 | ASR 动态修正 | **暂缓完整 `pgs/rpl/rg` 片段表实现**。保留 `wpgs` 与 `[XunfeiASR]` 日志，先保证当前 final 文本稳定；后续基于真机日志恢复完整动态修正 |
 
 ## 10. 关联文档
 

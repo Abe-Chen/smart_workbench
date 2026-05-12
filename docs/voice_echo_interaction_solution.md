@@ -231,9 +231,13 @@ class AssistantVoiceEchoState {
 - 下一轮 `startListening`
 - `clearConversation`
 
-## 7. ASR 识别逻辑
+## 7. ASR 识别逻辑与动态修正
 
-本次没有启用复杂的 `pgs/rpl/rg` 片段表方案。
+结论：**ASR 动态修正没有被放弃，但当前没有启用完整实现。**
+
+讯飞请求仍然开启 `dwa: wpgs`，服务端会返回 `pgs`、`rg`、`sn` 等动态修正字段。当前代码会记录这些字段，方便后续基于真机日志恢复完整修正能力。
+
+当前暂不启用完整 `pgs/rpl/rg` 片段表方案。
 
 当前采用回退后的稳定策略：
 
@@ -246,7 +250,19 @@ class AssistantVoiceEchoState {
 - 当前阶段优先保证 final 文本稳定、业务链路可靠。
 - 已增加 `[XunfeiASR]` 调试日志，便于真机观察讯飞返回片段和 displayText。
 
-如果后续要重新做 `wpgs` 动态修正，必须先用真机日志复盘具体返回结构，再补单测，不直接改主链路。
+后续待恢复的完整动态修正方案：
+
+- 维护 `sn -> segment` 片段表。
+- `pgs=apd` 时追加或更新当前 `sn`。
+- `pgs=rpl` 时按 `rg` 指定范围替换片段。
+- 每次事件按 `sn` 排序拼接 displayText。
+- 补覆盖 `apd`、`rpl`、跨范围替换、final 的单测。
+
+恢复前置条件：
+
+- 先收集真机 `[XunfeiASR]` 日志，确认实际 `pgs/rg/sn` 返回结构。
+- 不再凭协议印象直接改主链路。
+- 完整修正必须保证 final 文本和业务执行准确性不倒退。
 
 ## 8. 调试日志
 
