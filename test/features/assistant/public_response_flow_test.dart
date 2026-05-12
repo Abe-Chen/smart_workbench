@@ -9,6 +9,9 @@ import 'package:smart_workbench/core/config/env_config.dart';
 import 'package:smart_workbench/features/assistant/application/assistant_controller.dart';
 import 'package:smart_workbench/features/assistant/application/assistant_state.dart';
 import 'package:smart_workbench/features/assistant/data/doubao_responses_client.dart';
+import 'package:smart_workbench/features/assistant/data/tts_facade.dart';
+import 'package:smart_workbench/features/assistant/data/volc_tts_client.dart';
+import 'package:smart_workbench/features/assistant/data/xunfei_tts_client.dart';
 import 'package:smart_workbench/features/assistant/domain/assistant_execution_mode.dart';
 import 'package:smart_workbench/features/assistant/domain/assistant_message.dart';
 import 'package:smart_workbench/features/settings/application/app_settings_controller.dart';
@@ -410,6 +413,54 @@ void main() {
       expect(_latestAssistantText(container), contains('路线规划先不继续'));
       expect(_latestAssistantText(container), isNot(contains('去取消')));
     });
+
+    test('全部播报一遍走本地完整复播，不再请求大模型', () async {
+      final StreamController<PublicResponseEvent> stream =
+          StreamController<PublicResponseEvent>();
+      final _FakeDoubaoResponsesClient client = _FakeDoubaoResponsesClient(
+        <StreamController<PublicResponseEvent>>[stream],
+      );
+      final _RecordingTtsFacade tts = _RecordingTtsFacade();
+
+      final ProviderContainer container = ProviderContainer(
+        overrides: <Override>[
+          doubaoResponsesClientProvider.overrideWithValue(client),
+          ttsFacadeProvider.overrideWithValue(tts),
+          currentTtsPlaybackModeProvider.overrideWithValue(
+            TtsPlaybackMode.silent,
+          ),
+        ],
+      );
+      addTearDown(container.dispose);
+
+      final AssistantController controller = container.read(
+        assistantControllerProvider.notifier,
+      );
+      final Future<void> future = controller.sendUserMessage(
+        '今天有什么新闻',
+        source: AssistantEntrySource.drawerText,
+      );
+
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      stream.add(PublicResponseRequestAcceptedEvent('resp_news'));
+      stream.add(
+        PublicResponseTextDeltaEvent('核心内容如下：1. 第一条新闻有明确进展。2. 第二条新闻也值得关注。'),
+      );
+      await stream.close();
+      await future;
+
+      await controller.sendUserMessage(
+        '全部播报一遍',
+        source: AssistantEntrySource.quickVoice,
+      );
+
+      expect(client.requests.length, 1);
+      expect(tts.spoken, hasLength(1));
+      expect(tts.spoken.single, contains('第1条'));
+      expect(tts.spoken.single, contains('第一条新闻'));
+      expect(tts.spoken.single, contains('第2条'));
+      expect(tts.spoken.single, contains('第二条新闻'));
+    });
   });
 }
 
@@ -481,4 +532,76 @@ class _RecordedRequest {
   final AssistantExecutionMode mode;
   final String? previousResponseId;
   final bool summaryOnly;
+}
+
+class _RecordingTtsFacade extends TtsFacade {
+  _RecordingTtsFacade()
+    : super(volc: _NoopVolcTtsClient(), xunfei: _NoopXunfeiTtsClient());
+
+  final List<String> spoken = <String>[];
+
+  @override
+  Future<void> speak(
+    String text, {
+    required String voice,
+    required double rate,
+  }) async {
+    spoken.add(text);
+  }
+
+  @override
+  Future<void> speakAndWaitComplete(
+    String text, {
+    required String voice,
+    required double rate,
+  }) async {
+    spoken.add(text);
+  }
+
+  @override
+  Future<void> stop() async {}
+}
+
+class _NoopVolcTtsClient implements VolcTtsClient {
+  @override
+  Future<void> speak(
+    String text, {
+    required String voice,
+    int speedRate = 0,
+  }) async {}
+
+  @override
+  Future<void> speakAndWaitComplete(
+    String text, {
+    required String voice,
+    int speedRate = 0,
+  }) async {}
+
+  @override
+  Future<void> stop() async {}
+
+  @override
+  Future<void> dispose() async {}
+}
+
+class _NoopXunfeiTtsClient implements XunfeiTtsClient {
+  @override
+  Future<void> speak(
+    String text, {
+    required String voice,
+    int xunfeiSpeed = 50,
+  }) async {}
+
+  @override
+  Future<void> speakAndWaitComplete(
+    String text, {
+    required String voice,
+    int xunfeiSpeed = 50,
+  }) async {}
+
+  @override
+  Future<void> stop() async {}
+
+  @override
+  Future<void> dispose() async {}
 }

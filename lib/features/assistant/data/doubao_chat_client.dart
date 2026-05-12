@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:dio/dio.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/config/env_config.dart';
@@ -85,21 +86,41 @@ class DoubaoChatClient {
       body['tools'] = tools;
     }
 
-    final Response<ResponseBody> response = await _dio.post<ResponseBody>(
-      '$_arkBaseUrl/chat/completions',
-      options: Options(
-        responseType: ResponseType.stream,
-        headers: <String, String>{
-          'Authorization': 'Bearer ${_env.volcArkApiKey}',
-          'Content-Type': 'application/json',
-          'Accept': 'text/event-stream',
-        },
-      ),
-      data: body,
+    _doubaoChatDebugLog(
+      'request stream=true messages=${messages.length} '
+      'tools=${_toolNamesForLog(tools)} lastUser="${_lastUserForLog(messages)}"',
     );
+    _doubaoChatDebugLog('request body=${_jsonForLog(body)}');
+
+    late final Response<ResponseBody> response;
+    try {
+      response = await _dio.post<ResponseBody>(
+        '$_arkBaseUrl/chat/completions',
+        options: Options(
+          responseType: ResponseType.stream,
+          headers: <String, String>{
+            'Authorization': 'Bearer ${_env.volcArkApiKey}',
+            'Content-Type': 'application/json',
+            'Accept': 'text/event-stream',
+          },
+        ),
+        data: body,
+      );
+      _doubaoChatDebugLog('response status=${response.statusCode}');
+    } on DioException catch (e) {
+      _doubaoChatDebugLog(
+        'dio error type=${e.type} status=${e.response?.statusCode} '
+        'message=${e.message} data=${_jsonForLog(e.response?.data)}',
+      );
+      rethrow;
+    } catch (e) {
+      _doubaoChatDebugLog('request error=$e');
+      rethrow;
+    }
 
     final ResponseBody? respBody = response.data;
     if (respBody == null) {
+      _doubaoChatDebugLog('empty response body');
       throw DoubaoChatException('空响应');
     }
 
@@ -123,7 +144,8 @@ class DoubaoChatClient {
       Map<String, dynamic>? json;
       try {
         json = jsonDecode(payload) as Map<String, dynamic>;
-      } catch (_) {
+      } catch (e) {
+        _doubaoChatDebugLog('sse json parse ignored error=$e payload=$payload');
         continue;
       }
 
@@ -138,6 +160,7 @@ class DoubaoChatClient {
         final String? deltaContent = delta['content'] as String?;
         if (deltaContent != null && deltaContent.isNotEmpty) {
           contentBuffer.write(deltaContent);
+          _doubaoChatDebugLog('delta content="${_clipLog(deltaContent)}"');
           yield ChatTokenEvent(deltaContent);
         }
         final List<dynamic>? toolDeltas = delta['tool_calls'] as List<dynamic>?;
@@ -159,12 +182,14 @@ class DoubaoChatClient {
               final String? a = fn['arguments'] as String?;
               if (a != null) b.arguments.write(a);
             }
+            _doubaoChatDebugLog('delta tool_call=${_jsonForLog(raw)}');
           }
         }
       }
 
       if (finish != null) {
         finishReason = finish;
+        _doubaoChatDebugLog('finish_reason=$finishReason');
       }
     }
 
@@ -177,6 +202,11 @@ class DoubaoChatClient {
       content: contentBuffer.toString(),
       toolCalls: toolCalls,
       finishReason: finishReason,
+    );
+    _doubaoChatDebugLog(
+      'complete finish_reason=$finishReason '
+      'content="${_clipLog(contentBuffer.toString(), max: 1200)}" '
+      'toolCalls=${toolCalls.map((ToolCall call) => '${call.name}:${_clipLog(call.argumentsJson)}').toList()}',
     );
   }
 }
@@ -198,3 +228,45 @@ final Provider<DoubaoChatClient> doubaoChatClientProvider =
       final ArkNetworkProbe probe = ref.watch(arkNetworkProbeProvider);
       return DoubaoChatClient(env: env, probe: probe);
     });
+
+void _doubaoChatDebugLog(String message) {
+  if (!kDebugMode) return;
+  debugPrint('[DoubaoChat] $message');
+}
+
+String _toolNamesForLog(List<Map<String, dynamic>>? tools) {
+  if (tools == null || tools.isEmpty) return '[]';
+  final List<String> names = <String>[];
+  for (final Map<String, dynamic> tool in tools) {
+    final Object? function = tool['function'];
+    if (function is Map<String, dynamic>) {
+      names.add((function['name'] as Object?)?.toString() ?? 'unknown');
+    } else {
+      names.add((tool['name'] as Object?)?.toString() ?? 'unknown');
+    }
+  }
+  return names.toString();
+}
+
+String _lastUserForLog(List<AssistantMessage> messages) {
+  for (final AssistantMessage message in messages.reversed) {
+    if (message.role == AssistantRole.user) {
+      return _clipLog(message.content, max: 500);
+    }
+  }
+  return '';
+}
+
+String _jsonForLog(Object? value, {int max = 1600}) {
+  try {
+    return _clipLog(jsonEncode(value), max: max);
+  } catch (_) {
+    return _clipLog(value, max: max);
+  }
+}
+
+String _clipLog(Object? value, {int max = 800}) {
+  final String text = value?.toString() ?? '';
+  if (text.length <= max) return text;
+  return '${text.substring(0, max)}...(${text.length} chars)';
+}

@@ -1,7 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:web_socket_channel/io.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
@@ -38,8 +38,8 @@ class AsrErrorEvent extends AsrEvent {
 ///   c.dispose();          // 拆连接
 class XunfeiAsrClient {
   XunfeiAsrClient({required EnvConfig env, int vadEosMs = 2000})
-      : _env = env,
-        _vadEosMs = vadEosMs.clamp(1000, 10000);
+    : _env = env,
+      _vadEosMs = vadEosMs.clamp(1000, 10000);
 
   final EnvConfig _env;
   final int _vadEosMs;
@@ -69,10 +69,12 @@ class XunfeiAsrClient {
     _wsSub = _ws!.stream.listen(
       _handleMessage,
       onError: (Object err, StackTrace _) {
+        _asrDebugLog('ws error=$err');
         _eventCtrl.add(AsrErrorEvent(-1, err.toString()));
       },
       onDone: () {
         if (!_ended) {
+          _asrDebugLog('ws done final="${_clipLog(_accumulated.toString())}"');
           _eventCtrl.add(AsrFinalEvent(_accumulated.toString()));
         }
       },
@@ -170,24 +172,33 @@ class XunfeiAsrClient {
       final Map<String, dynamic>? data = msg['data'] as Map<String, dynamic>?;
       if (data == null) return;
       final int status = data['status'] as int? ?? 0;
-      final Map<String, dynamic>? result = data['result'] as Map<String, dynamic>?;
+      final Map<String, dynamic>? result =
+          data['result'] as Map<String, dynamic>?;
       if (result != null) {
         final String segment = _extractWords(result);
         final String pgs = (result['pgs'] as String?) ?? 'apd';
         if (pgs == 'rpl') {
-          // 替换模式：移除上次最后一段，目前简化处理：直接重写
+          // 回退到之前的简化策略：rpl 到达时直接重写当前展示文本。
           _accumulated.clear();
           _accumulated.write(segment);
         } else {
           _accumulated.write(segment);
         }
-        _eventCtrl.add(AsrPartialEvent(_accumulated.toString()));
+        final String displayText = _accumulated.toString();
+        _asrDebugLog(
+          'status=$status sn=${result['sn']} pgs=$pgs rg=${result['rg']} '
+          'segment="${_clipLog(segment)}" displayText="${_clipLog(displayText)}"',
+        );
+        _eventCtrl.add(AsrPartialEvent(displayText));
       }
       if (status == 2) {
-        _eventCtrl.add(AsrFinalEvent(_accumulated.toString()));
+        final String finalText = _accumulated.toString();
+        _asrDebugLog('final status=2 text="${_clipLog(finalText)}"');
+        _eventCtrl.add(AsrFinalEvent(finalText));
         _ws?.sink.close();
       }
     } catch (e) {
+      _asrDebugLog('parse error=$e raw=${_clipLog(raw)}');
       _eventCtrl.add(AsrErrorEvent(-2, '解析失败：$e'));
     }
   }
@@ -208,6 +219,17 @@ class XunfeiAsrClient {
     }
     return buf.toString();
   }
+}
+
+void _asrDebugLog(String message) {
+  if (!kDebugMode) return;
+  debugPrint('[XunfeiASR] $message');
+}
+
+String _clipLog(Object? value, {int max = 600}) {
+  final String text = value?.toString() ?? '';
+  if (text.length <= max) return text;
+  return '${text.substring(0, max)}...(${text.length} chars)';
 }
 
 typedef XunfeiAsrClientFactory = XunfeiAsrClient Function({int vadEosMs});

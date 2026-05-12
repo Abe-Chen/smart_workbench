@@ -628,7 +628,7 @@ void main() {
               ToolRegistry(<AssistantTool>[tool]),
             ),
             volcTtsClientProvider.overrideWithValue(_FakeVolcTtsClient()),
-          currentTtsPlaybackModeProvider.overrideWithValue(
+            currentTtsPlaybackModeProvider.overrideWithValue(
               TtsPlaybackMode.silent,
             ),
           ],
@@ -1093,6 +1093,70 @@ void main() {
       expect(deleteTool.callCount, 1);
     });
 
+    test('删除描述不精确但列出候选后，说“第一条”会进入删除确认', () async {
+      final _FakeQueryTasksTool queryTool = _FakeQueryTasksTool(
+        tasks: <Map<String, Object?>>[
+          <String, Object?>{
+            'id': 1,
+            'title': '需求讨论会',
+            'date': '2026-05-09',
+            'time': '15:00 - 16:00',
+          },
+          <String, Object?>{
+            'id': 2,
+            'title': '方案评审会',
+            'date': '2026-05-09',
+            'time': '17:00 - 18:00',
+          },
+        ],
+      );
+      final _FakeDeleteTaskTool deleteTool = _FakeDeleteTaskTool();
+      final ProviderContainer container = ProviderContainer(
+        overrides: <Override>[
+          toolRegistryProvider.overrideWithValue(
+            ToolRegistry(<AssistantTool>[queryTool, deleteTool]),
+          ),
+          volcTtsClientProvider.overrideWithValue(_FakeVolcTtsClient()),
+          currentTtsPlaybackModeProvider.overrideWithValue(
+            TtsPlaybackMode.silent,
+          ),
+        ],
+      );
+      addTearDown(container.dispose);
+
+      final AssistantController controller = container.read(
+        assistantControllerProvider.notifier,
+      );
+      await controller.sendUserMessage(
+        '把明天的明天的日程删掉',
+        source: AssistantEntrySource.quickVoice,
+      );
+
+      AssistantUiState state = container.read(assistantControllerProvider);
+      expect(state.pendingConfirm, isNull);
+      expect(
+        state.messages
+            .lastWhere(
+              (AssistantMessage message) =>
+                  message.role == AssistantRole.assistant && !message.streaming,
+            )
+            .content,
+        contains('明天已有这些安排'),
+      );
+
+      await controller.sendUserMessage(
+        '第一条',
+        source: AssistantEntrySource.quickVoice,
+      );
+
+      state = container.read(assistantControllerProvider);
+      final Map<String, dynamic> args = state.pendingConfirm!.toolCall
+          .argumentsAsMap();
+      expect(state.pendingConfirm!.toolCall.name, 'delete_task');
+      expect(args['task_id'], 1);
+      expect(deleteTool.callCount, 0);
+    });
+
     test('创建确认态说“需要提醒”会补上提醒，不会中断多轮流程', () async {
       final _FakeCreateTaskTool tool = _FakeCreateTaskTool();
       final ProviderContainer container = ProviderContainer(
@@ -1215,6 +1279,7 @@ void main() {
       );
       expect(state.pendingConfirm, isNotNull);
       expect(state.stage, AssistantStage.listen);
+      expect(state.voiceEcho.phase, AssistantVoiceEchoPhase.listening);
       expect(recorder.startCount, 1);
       expect(asr.startCount, 1);
       expect(tool.callCount, 0);
@@ -1253,10 +1318,115 @@ void main() {
       final AssistantUiState state = container.read(
         assistantControllerProvider,
       );
+      expect(state.voiceEcho.phase, AssistantVoiceEchoPhase.listening);
+      expect(state.voiceEcho.displayText, '我在听，你可以直接说');
       expect(recorder.startCount, 2);
       expect(asr.startCount, 2);
       expect(state.stage, AssistantStage.listen);
       expect(state.messages, isEmpty);
+    });
+
+    test('open mic 检测到用户开口后停止等待倒计时但继续听 final', () async {
+      final _FakePcmStreamRecorder recorder = _FakePcmStreamRecorder();
+      final _FakeXunfeiAsrClient asr = _FakeXunfeiAsrClient();
+      final ProviderContainer container = ProviderContainer(
+        overrides: <Override>[
+          xunfeiTtsClientProvider.overrideWithValue(_FakeXunfeiTtsClient()),
+          pcmStreamRecorderFactoryProvider.overrideWithValue(() => recorder),
+          xunfeiAsrClientFactoryProvider.overrideWithValue(
+            ({int vadEosMs = 2000}) => asr,
+          ),
+          volcTtsClientProvider.overrideWithValue(_FakeVolcTtsClient()),
+          currentTtsPlaybackModeProvider.overrideWithValue(
+            TtsPlaybackMode.silent,
+          ),
+        ],
+      );
+      addTearDown(container.dispose);
+
+      final AssistantController controller = container.read(
+        assistantControllerProvider.notifier,
+      );
+      await controller.startListening(
+        source: AssistantEntrySource.quickVoice,
+        openDrawer: false,
+        mode: AssistantListeningMode.openMic,
+      );
+
+      expect(
+        container.read(assistantControllerProvider).voiceEcho.remainingMs,
+        greaterThan(0),
+      );
+
+      recorder.emitSpeechFrames();
+      await Future<void>.delayed(Duration.zero);
+
+      final AssistantUiState state = container.read(
+        assistantControllerProvider,
+      );
+      expect(state.stage, AssistantStage.listen);
+      expect(state.listenWindowRemainingMs, 0);
+      expect(state.voiceEcho.remainingMs, 0);
+      expect(state.voiceEcho.displayText, '我在听，你继续说');
+      expect(asr.stopCount, 0);
+    });
+
+    test('语音识别 final 会冻结用户原话并在处理时保留回显', () async {
+      final _FakeQueryTasksTool tool = _FakeQueryTasksTool();
+      final _FakePcmStreamRecorder recorder = _FakePcmStreamRecorder();
+      final _FakeXunfeiAsrClient asr = _FakeXunfeiAsrClient();
+      final ProviderContainer container = ProviderContainer(
+        overrides: <Override>[
+          toolRegistryProvider.overrideWithValue(
+            ToolRegistry(<AssistantTool>[tool]),
+          ),
+          doubaoChatClientProvider.overrideWithValue(
+            _FakeDoubaoChatClient(<ChatRoundCompleteEvent>[]),
+          ),
+          xunfeiTtsClientProvider.overrideWithValue(_FakeXunfeiTtsClient()),
+          pcmStreamRecorderFactoryProvider.overrideWithValue(() => recorder),
+          xunfeiAsrClientFactoryProvider.overrideWithValue(
+            ({int vadEosMs = 2000}) => asr,
+          ),
+          volcTtsClientProvider.overrideWithValue(_FakeVolcTtsClient()),
+          currentTtsPlaybackModeProvider.overrideWithValue(
+            TtsPlaybackMode.silent,
+          ),
+        ],
+      );
+      addTearDown(container.dispose);
+
+      final AssistantController controller = container.read(
+        assistantControllerProvider.notifier,
+      );
+      await controller.startListening(
+        source: AssistantEntrySource.quickVoice,
+        openDrawer: false,
+      );
+      asr.emit(AsrPartialEvent('嗯小治小治明天有什么安排'));
+      await Future<void>.delayed(Duration.zero);
+
+      expect(
+        container.read(assistantControllerProvider).voiceEcho.displayText,
+        '识别中：嗯小治小治明天有什么安排',
+      );
+      expect(
+        container.read(assistantControllerProvider).voiceEcho.remainingMs,
+        0,
+      );
+
+      asr.emit(AsrFinalEvent('嗯小治小治明天有什么日程安排'));
+      await Future<void>.delayed(Duration.zero);
+
+      final AssistantUiState state = container.read(
+        assistantControllerProvider,
+      );
+      expect(state.error, isNull);
+      expect(state.voiceEcho.phase, AssistantVoiceEchoPhase.processing);
+      expect(state.voiceEcho.finalText, '明天有什么日程安排');
+      expect(state.voiceEcho.rawFinalText, '嗯小治小治明天有什么日程安排');
+      expect(state.voiceEcho.cleaned, isTrue);
+      expect(tool.callCount, 1);
     });
 
     test('主动建议里说“不用了”会收口，不会重新当成新问题', () async {
@@ -1409,9 +1579,16 @@ class _FakePcmStreamRecorder implements PcmStreamRecorder {
   int startCount = 0;
   int stopCount = 0;
   final ValueNotifier<double> _audioLevel = ValueNotifier<double>(0.0);
+  StreamController<Uint8List>? _frames;
 
   @override
   ValueListenable<double> get audioLevel => _audioLevel;
+
+  void emitSpeechFrames({int count = 2, int amplitude = 200}) {
+    for (int i = 0; i < count; i++) {
+      _frames?.add(_pcmFrame(amplitude));
+    }
+  }
 
   @override
   Future<bool> hasPermission() async => true;
@@ -1419,19 +1596,33 @@ class _FakePcmStreamRecorder implements PcmStreamRecorder {
   @override
   Future<Stream<Uint8List>> start() async {
     startCount += 1;
-    return const Stream<Uint8List>.empty();
+    _frames = StreamController<Uint8List>.broadcast();
+    return _frames!.stream;
   }
 
   @override
   Future<void> stop() async {
     stopCount += 1;
     _audioLevel.value = 0.0;
+    await _frames?.close();
+    _frames = null;
   }
 
   @override
   Future<void> dispose() async {
+    await _frames?.close();
+    _frames = null;
     // 测试里 fake 是单例 + factory 复用，不 dispose 内部 notifier，
     // 避免下一次 startListening 在 addListener 时抛 used-after-dispose。
+  }
+
+  Uint8List _pcmFrame(int amplitude) {
+    final Uint8List frame = Uint8List(1280);
+    final ByteData data = ByteData.sublistView(frame);
+    for (int i = 0; i < frame.lengthInBytes ~/ 2; i++) {
+      data.setInt16(i * 2, amplitude, Endian.little);
+    }
+    return frame;
   }
 }
 

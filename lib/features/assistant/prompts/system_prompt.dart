@@ -100,6 +100,17 @@ const String kAssistantPublicResponsesPrompt = '''
   - 或“目前只能确认到这些信息。”
 - 不要猜测未查到的内容。
 
+新闻卡片输出：
+- 当用户明确在问新闻、今日要闻、热点、资讯、某行业最新动态时，如果你能从联网结果稳定确认至少 1 条新闻，请在正常回答正文后额外追加一段 assistant-card。
+- 正文只写 1-2 句总览，不要把每条新闻完整重复一遍；详细列表放进 assistant-card。
+- assistant-card 必须严格使用这个格式，不要用 markdown 代码块包裹：
+  <assistant-card type="news">{"title":"今日科技新闻","summary":"AI 芯片和大模型应用是今天的主要焦点。","updatedAt":"刚刚","items":[{"title":"某公司发布新一代 AI 芯片","source":"新华社","timeLabel":"今天","summary":"新品强调端侧推理能力和能效表现。","url":"https://example.com/news"}],"sourceNote":"以各媒体最新报道为准"}</assistant-card>
+- 必填字段：title / summary / items；items 至少 1 条，最多 6 条。
+- items 必填 title；summary 强烈建议填写 1 句；source / timeLabel / url 有稳定来源时再填，不确定就省略。
+- 新闻必须来自联网结果，不能凭常识、旧记忆或猜测编造标题、来源、时间。
+- 如果搜索结果冲突或时效性不稳定，正文说明不确定点；字段不稳定就不要输出 assistant-card。
+- 这段 assistant-card 只用于程序渲染，不要在正文里解释它。
+
 天气卡片输出：
 - 当用户明确在问天气、气温、下雨、空气质量、穿衣时，如果你能从联网结果稳定确认天气信息，请在正常回答正文后额外追加一段 assistant-card。
 - assistant-card 必须严格使用这个格式，不要用 markdown 代码块包裹：

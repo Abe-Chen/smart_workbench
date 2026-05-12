@@ -56,6 +56,67 @@ void main() {
       expect(state.pendingConfirm, isNotNull);
     });
 
+    test('quickVoice 确认态补充提醒后仍停留在全屏大卡', () async {
+      final ProviderContainer container = _containerWithCreateTool();
+      addTearDown(container.dispose);
+      final AssistantController controller = container.read(
+        assistantControllerProvider.notifier,
+      );
+
+      await controller.sendUserMessage(
+        '帮我创建一个明天下午 3 点的需求讨论会的日程',
+        source: AssistantEntrySource.quickVoice,
+      );
+      controller.hideAnswerCard(stopSpeaking: false);
+
+      await controller.sendUserMessage(
+        '提前 10 分钟提醒我',
+        source: AssistantEntrySource.quickVoice,
+      );
+
+      final AssistantUiState state = container.read(
+        assistantControllerProvider,
+      );
+      expect(state.drawerOpen, isFalse);
+      expect(state.surfaceState, AssistantSurfaceState.fullscreenAnswer);
+      expect(state.answerCardKind, AnswerCardKind.confirm);
+      expect(state.pendingConfirm, isNotNull);
+      expect(
+        state.pendingConfirm!.toolCall.argumentsAsMap()['reminder_key'],
+        'before10m',
+      );
+    });
+
+    test('大卡展开抽屉时会请求定位到最新消息', () async {
+      final ProviderContainer container = _containerWithCreateTool();
+      addTearDown(container.dispose);
+      final AssistantController controller = container.read(
+        assistantControllerProvider.notifier,
+      );
+
+      await controller.sendUserMessage(
+        '创建一个日程',
+        source: AssistantEntrySource.quickVoice,
+      );
+      final int before = container
+          .read(assistantControllerProvider)
+          .drawerOpenRequestId;
+
+      controller.expandAnswerCardToDrawer();
+
+      final AssistantUiState state = container.read(
+        assistantControllerProvider,
+      );
+      expect(state.drawerOpen, isTrue);
+      expect(state.surfaceState, AssistantSurfaceState.drawerOpen);
+      expect(state.answerCardKind, isNull);
+      expect(state.drawerOpenRequestId, before + 1);
+      expect(
+        state.drawerScrollTarget,
+        AssistantDrawerScrollTarget.latestMessage,
+      );
+    });
+
     test('drawerText 仍然走抽屉，不弹全屏大卡', () async {
       final ProviderContainer container = _containerWithCreateTool();
       addTearDown(container.dispose);
@@ -71,6 +132,52 @@ void main() {
       expect(state.surfaceState, AssistantSurfaceState.drawerOpen);
       expect(state.replySurface, AssistantReplySurface.drawer);
       expect(state.answerCardKind, isNull);
+    });
+
+    test('抽屉已打开时 quickVoice 也留在抽屉，不弹全屏大卡', () async {
+      final ProviderContainer container = _containerWithCreateTool();
+      addTearDown(container.dispose);
+      final AssistantController controller = container.read(
+        assistantControllerProvider.notifier,
+      );
+
+      controller.openDrawer();
+      await controller.sendUserMessage(
+        '创建一个日程',
+        source: AssistantEntrySource.quickVoice,
+      );
+
+      final AssistantUiState state = container.read(
+        assistantControllerProvider,
+      );
+      expect(state.drawerOpen, isTrue);
+      expect(state.surfaceState, AssistantSurfaceState.drawerOpen);
+      expect(state.replySurface, AssistantReplySurface.drawer);
+      expect(state.answerCardKind, isNull);
+    });
+
+    test('drawerText 进入确认态时会请求定位确认区域', () async {
+      final ProviderContainer container = _containerWithCreateTool();
+      addTearDown(container.dispose);
+
+      await container
+          .read(assistantControllerProvider.notifier)
+          .sendUserMessage(
+            '明天下午3点需求讨论会',
+            source: AssistantEntrySource.drawerText,
+          );
+
+      final AssistantUiState state = container.read(
+        assistantControllerProvider,
+      );
+      expect(state.drawerOpen, isTrue);
+      expect(state.surfaceState, AssistantSurfaceState.drawerOpen);
+      expect(state.pendingConfirm, isNotNull);
+      expect(state.drawerOpenRequestId, greaterThan(0));
+      expect(
+        state.drawerScrollTarget,
+        AssistantDrawerScrollTarget.pendingConfirm,
+      );
     });
   });
 }

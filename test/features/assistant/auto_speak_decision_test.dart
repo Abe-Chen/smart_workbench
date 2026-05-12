@@ -7,24 +7,38 @@ import 'package:smart_workbench/features/settings/domain/app_settings.dart';
 /// 决策矩阵覆盖：
 /// - 3 入口（drawerText / drawerVoice / quickVoice）
 /// - 4 模式（auto / always / shortOnly / silent）
-/// - 2 surface（compactCard / drawer）
+/// - 2 承载面（fullscreenAnswer / drawer）
 /// - sessionMute 优先级
 void main() {
   bool decide({
     required AssistantEntrySource entry,
     required AssistantReplySurface surface,
     required TtsPlaybackMode mode,
+    bool fullscreenAnswer = false,
     AssistantSessionMute sessionMute = AssistantSessionMute.followSettings,
   }) {
     return decideAutoSpeak(
       entrySource: entry,
       surface: surface,
+      fullscreenAnswer: fullscreenAnswer,
       mode: mode,
       sessionMute: sessionMute,
     );
   }
 
   group('auto 模式（默认）', () {
+    test('quickVoice + fullscreenAnswer → 播', () {
+      expect(
+        decide(
+          entry: AssistantEntrySource.quickVoice,
+          surface: AssistantReplySurface.none,
+          fullscreenAnswer: true,
+          mode: TtsPlaybackMode.auto,
+        ),
+        true,
+      );
+    });
+
     test('drawerText + drawer → 不播', () {
       expect(
         decide(
@@ -36,7 +50,7 @@ void main() {
       );
     });
 
-    test('drawerVoice + drawer → 播（关键改动）', () {
+    test('drawerVoice + drawer → 播', () {
       expect(
         decide(
           entry: AssistantEntrySource.drawerVoice,
@@ -47,7 +61,7 @@ void main() {
       );
     });
 
-    test('quickVoice + drawer（长答被甩到抽屉）→ 播（关键改动）', () {
+    test('quickVoice + drawer（抽屉已打开的会话）→ 播', () {
       expect(
         decide(
           entry: AssistantEntrySource.quickVoice,
@@ -58,29 +72,7 @@ void main() {
       );
     });
 
-    test('quickVoice + compactCard（原短答路径）→ 播（保持）', () {
-      expect(
-        decide(
-          entry: AssistantEntrySource.quickVoice,
-          surface: AssistantReplySurface.compactCard,
-          mode: TtsPlaybackMode.auto,
-        ),
-        true,
-      );
-    });
-
-    test('drawerText + compactCard（理论上不会出现，但矩阵保护）→ 播', () {
-      expect(
-        decide(
-          entry: AssistantEntrySource.drawerText,
-          surface: AssistantReplySurface.compactCard,
-          mode: TtsPlaybackMode.auto,
-        ),
-        true,
-      );
-    });
-
-    test('任意入口 + none → 不播', () {
+    test('任意入口 + none 且无大卡 → 不播', () {
       expect(
         decide(
           entry: AssistantEntrySource.quickVoice,
@@ -104,11 +96,12 @@ void main() {
       );
     });
 
-    test('compactCard 也播', () {
+    test('fullscreenAnswer 也播', () {
       expect(
         decide(
           entry: AssistantEntrySource.quickVoice,
-          surface: AssistantReplySurface.compactCard,
+          surface: AssistantReplySurface.none,
+          fullscreenAnswer: true,
           mode: TtsPlaybackMode.always,
         ),
         true,
@@ -128,11 +121,12 @@ void main() {
   });
 
   group('shortOnly 模式', () {
-    test('compactCard 才播', () {
+    test('fullscreenAnswer 才播', () {
       expect(
         decide(
           entry: AssistantEntrySource.quickVoice,
-          surface: AssistantReplySurface.compactCard,
+          surface: AssistantReplySurface.none,
+          fullscreenAnswer: true,
           mode: TtsPlaybackMode.shortOnly,
         ),
         true,
@@ -152,22 +146,22 @@ void main() {
   });
 
   group('silent 模式', () {
-    test('任意入口 + 任意 surface → 不播', () {
+    test('任意入口 + 任意承载面 → 不播', () {
       for (final AssistantEntrySource entry in AssistantEntrySource.values) {
-        for (final AssistantReplySurface surface in <AssistantReplySurface>[
-          AssistantReplySurface.compactCard,
-          AssistantReplySurface.drawer,
-          AssistantReplySurface.none,
-        ]) {
-          expect(
-            decide(
-              entry: entry,
-              surface: surface,
-              mode: TtsPlaybackMode.silent,
-            ),
-            false,
-            reason: '$entry + $surface 应不播',
-          );
+        for (final bool fullscreenAnswer in <bool>[false, true]) {
+          for (final AssistantReplySurface surface
+              in AssistantReplySurface.values) {
+            expect(
+              decide(
+                entry: entry,
+                surface: surface,
+                fullscreenAnswer: fullscreenAnswer,
+                mode: TtsPlaybackMode.silent,
+              ),
+              false,
+              reason: '$entry + $surface + fullscreen=$fullscreenAnswer 应不播',
+            );
+          }
         }
       }
     });
@@ -178,7 +172,8 @@ void main() {
       expect(
         decide(
           entry: AssistantEntrySource.quickVoice,
-          surface: AssistantReplySurface.compactCard,
+          surface: AssistantReplySurface.none,
+          fullscreenAnswer: true,
           mode: TtsPlaybackMode.always,
           sessionMute: AssistantSessionMute.muted,
         ),
@@ -203,7 +198,8 @@ void main() {
         expect(
           decide(
             entry: AssistantEntrySource.quickVoice,
-            surface: AssistantReplySurface.compactCard,
+            surface: AssistantReplySurface.none,
+            fullscreenAnswer: true,
             mode: mode,
             sessionMute: AssistantSessionMute.muted,
           ),

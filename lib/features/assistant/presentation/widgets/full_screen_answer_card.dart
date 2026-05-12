@@ -21,6 +21,7 @@ class FullScreenAnswerCard extends StatelessWidget {
     this.toolFeedback,
     this.pendingConfirm,
     this.reminder,
+    this.bottomReservedSpace = 0,
     this.onClose,
     this.onExpand,
     this.onInteract,
@@ -38,6 +39,7 @@ class FullScreenAnswerCard extends StatelessWidget {
   final ToolFeedbackCardData? toolFeedback;
   final AssistantPendingConfirm? pendingConfirm;
   final ReminderCardData? reminder;
+  final double bottomReservedSpace;
   final VoidCallback? onClose;
   final VoidCallback? onExpand;
   final VoidCallback? onInteract;
@@ -81,16 +83,20 @@ class FullScreenAnswerCard extends StatelessWidget {
                         onExpand?.call();
                       }
                     },
-                    child: ConstrainedBox(
-                      constraints: BoxConstraints(
-                        maxWidth: maxWidth,
-                        maxHeight: maxHeight,
-                      ),
-                      child: _AnswerCardShell(
-                        kind: kind,
-                        onClose: onClose,
-                        onExpand: onExpand,
-                        child: _buildContent(),
+                    child: Padding(
+                      padding: EdgeInsets.only(bottom: bottomReservedSpace),
+                      child: ConstrainedBox(
+                        constraints: BoxConstraints(
+                          maxWidth: maxWidth,
+                          maxHeight: (maxHeight - bottomReservedSpace * 0.5)
+                              .clamp(320.0, maxHeight),
+                        ),
+                        child: _AnswerCardShell(
+                          kind: kind,
+                          onClose: onClose,
+                          onExpand: onExpand,
+                          child: _buildContent(),
+                        ),
                       ),
                     ),
                   ),

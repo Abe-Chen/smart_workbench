@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:math' as math;
 
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
@@ -31,6 +32,7 @@ import '../domain/assistant_message.dart';
 import '../domain/assistant_proactive_suggestion.dart';
 import '../domain/assistant_result_card.dart';
 import '../domain/assistant_slots.dart';
+import '../domain/assistant_speech_text.dart';
 import '../domain/assistant_tool.dart';
 import '../domain/tool_call.dart';
 import '../prompts/system_prompt.dart';
@@ -48,8 +50,8 @@ const Duration _kCompletionUndoWindow = Duration(seconds: 5);
 const Duration _kRecentWriteContextWindow = Duration(minutes: 5);
 
 /// 本地音频能量探测阈值（PCM16 RMS 归一化值）。
-/// 0.025 ≈ -32 dBFS，室内正常说话起步音量。
-const double _kSpeechRmsThreshold = 0.025;
+/// 只用于判断“用户已开口，等待倒计时可以停止”，不直接提交业务指令。
+const double _kSpeechRmsThreshold = 0.004;
 
 /// 连续 ≥ 此帧数（每帧 40ms）能量超阈值，才判定"用户开口"。
 /// 防抖：避免一次环境噪声尖峰误触发。
@@ -135,6 +137,7 @@ class AssistantController extends Notifier<AssistantUiState> {
   ValueListenable<double>? _audioLevelListenable;
   VoidCallback? _audioLevelListener;
   int _consecutiveLoudFrames = 0;
+  Timer? _voiceEchoHideTimer;
   _VoiceContinuationTrigger _nextStartListeningTrigger =
       _VoiceContinuationTrigger.none;
   Timer? _followUpExpireTimer;
@@ -159,19 +162,26 @@ class AssistantController extends Notifier<AssistantUiState> {
       _cancelOpenMicWait();
       _cancelFollowUpWindow();
       _cancelVoiceContinuation();
+      _cancelVoiceEchoHide();
       _teardownVoice();
     });
     return AssistantUiState.initial();
   }
 
-  void openDrawer() {
+  void openDrawer({AssistantDrawerScrollTarget? scrollTarget}) {
     _cancelFollowUpWindow();
+    final AssistantDrawerScrollTarget target =
+        scrollTarget ??
+        (state.pendingConfirm != null
+            ? AssistantDrawerScrollTarget.pendingConfirm
+            : AssistantDrawerScrollTarget.latestMessage);
     state = state.copyWith(
       drawerOpen: true,
       replySurface: AssistantReplySurface.drawer,
       surfaceState: AssistantSurfaceState.drawerOpen,
+      drawerOpenRequestId: state.drawerOpenRequestId + 1,
+      drawerScrollTarget: target,
       clearError: true,
-      clearCompactReply: true,
       clearAnswerCard: true,
     );
   }
@@ -180,6 +190,7 @@ class AssistantController extends Notifier<AssistantUiState> {
     state = state.copyWith(
       drawerOpen: false,
       surfaceState: AssistantSurfaceState.none,
+      drawerScrollTarget: AssistantDrawerScrollTarget.none,
     );
   }
 
@@ -189,6 +200,13 @@ class AssistantController extends Notifier<AssistantUiState> {
     } else {
       openDrawer();
     }
+  }
+
+  bool _shouldUseDrawerSurface(AssistantEntrySource source) {
+    return const AssistantSurfaceRouter().shouldUseDrawer(
+      entrySource: source,
+      drawerOpen: state.drawerOpen,
+    );
   }
 
   Future<void> sendUserMessage(
@@ -206,12 +224,17 @@ class AssistantController extends Notifier<AssistantUiState> {
     _cancelVoiceContinuation();
     _voiceContinuationAllowedForCurrentTurn =
         allowVoiceContinuation && source != AssistantEntrySource.drawerText;
-    if (state.pendingConfirm != null) {
-      await _handlePendingConfirmInput(trimmed, source: source);
-      return;
-    }
     if (state.stage == AssistantStage.think ||
         state.stage == AssistantStage.answer) {
+      return;
+    }
+    _markVoiceEchoProcessingFor(trimmed);
+    if (isAssistantFullReadoutRequest(trimmed)) {
+      await replayLatestAssistantReply(full: true);
+      return;
+    }
+    if (state.pendingConfirm != null) {
+      await _handlePendingConfirmInput(trimmed, source: source);
       return;
     }
     _cancelFollowUpWindow();
@@ -322,6 +345,10 @@ class AssistantController extends Notifier<AssistantUiState> {
       content: '',
       streaming: true,
     );
+    final AssistantVoiceEchoState? voiceEcho = _voiceEchoForTaskStart(
+      trimmed,
+      status: '正在理解',
+    );
 
     final List<String> initialSteps = <String>[
       '已识别：${requestPlan.intent.label}',
@@ -338,10 +365,10 @@ class AssistantController extends Notifier<AssistantUiState> {
       surfaceState: state.drawerOpen
           ? AssistantSurfaceState.drawerOpen
           : AssistantSurfaceState.none,
-      clearCompactReply: true,
       clearAnswerCard: true,
       clearError: true,
       clearErrorState: true,
+      voiceEcho: voiceEcho,
       progress: AssistantProgressState(
         mode: requestPlan.mode,
         phase: AssistantProgressPhase.routing,
@@ -384,7 +411,7 @@ class AssistantController extends Notifier<AssistantUiState> {
     }
     final _PendingConfirmInputAction action = _parsePendingConfirmInput(text);
     if (action == _PendingConfirmInputAction.unknown &&
-        await _tryUpdatePendingConfirmReminder(text, pending)) {
+        await _tryUpdatePendingConfirmReminder(text, pending, source: source)) {
       return;
     }
     if (!pending.resumeConversationAfterConfirm) {
@@ -399,7 +426,9 @@ class AssistantController extends Notifier<AssistantUiState> {
         break;
       case _PendingConfirmInputAction.unknown:
         if (pending.resumeConversationAfterConfirm) {
-          state = state.copyWith(
+          _restorePendingConfirmSurface(
+            pending: pending,
+            source: source,
             error: _copywriter.pendingConfirmUnknown(pending),
           );
         } else {
@@ -416,8 +445,9 @@ class AssistantController extends Notifier<AssistantUiState> {
 
   Future<bool> _tryUpdatePendingConfirmReminder(
     String text,
-    AssistantPendingConfirm pending,
-  ) async {
+    AssistantPendingConfirm pending, {
+    required AssistantEntrySource source,
+  }) async {
     if (pending.toolCall.name != 'create_task' &&
         pending.toolCall.name != 'update_task') {
       return false;
@@ -463,13 +493,13 @@ class AssistantController extends Notifier<AssistantUiState> {
       ),
       streaming: false,
     );
-    state = state.copyWith(
-      stage: AssistantStage.confirm,
-      pendingConfirm: AssistantPendingConfirm(
+    _restorePendingConfirmSurface(
+      pending: AssistantPendingConfirm(
         toolCall: nextCall,
         preview: preview,
         resumeConversationAfterConfirm: pending.resumeConversationAfterConfirm,
       ),
+      source: source,
       progress: const AssistantProgressState(
         mode: AssistantExecutionMode.local,
         phase: AssistantProgressPhase.awaitingConfirm,
@@ -482,6 +512,42 @@ class AssistantController extends Notifier<AssistantUiState> {
       trigger: _VoiceContinuationTrigger.confirm,
     );
     return true;
+  }
+
+  void _restorePendingConfirmSurface({
+    required AssistantPendingConfirm pending,
+    required AssistantEntrySource source,
+    AssistantProgressState? progress,
+    String? error,
+  }) {
+    final bool useDrawer = _shouldUseDrawerSurface(source);
+    final bool useFullscreenAnswer = !useDrawer;
+    final bool openingDrawer = useDrawer && !state.drawerOpen;
+    state = state.copyWith(
+      stage: AssistantStage.confirm,
+      drawerOpen: useDrawer,
+      replySurface: useDrawer
+          ? AssistantReplySurface.drawer
+          : AssistantReplySurface.none,
+      surfaceState: useFullscreenAnswer
+          ? AssistantSurfaceState.fullscreenAnswer
+          : AssistantSurfaceState.drawerOpen,
+      drawerOpenRequestId: openingDrawer
+          ? state.drawerOpenRequestId + 1
+          : state.drawerOpenRequestId,
+      drawerScrollTarget: useDrawer
+          ? AssistantDrawerScrollTarget.pendingConfirm
+          : state.drawerScrollTarget,
+      answerCardKind: useFullscreenAnswer ? AnswerCardKind.confirm : null,
+      answerCardText: useFullscreenAnswer ? pending.preview.title : null,
+      clearAnswerCard: !useFullscreenAnswer,
+      pendingConfirm: pending,
+      progress: progress,
+      error: error,
+      listenPartialText: '',
+      listenWindowRemainingMs: 0,
+      clearListenError: true,
+    );
   }
 
   Future<bool> _tryHandleDeterministicTaskCommand(
@@ -618,7 +684,15 @@ class AssistantController extends Notifier<AssistantUiState> {
       return;
     }
     if (!selection.hasSingleMatch) {
-      _pendingTaskChoice = null;
+      final List<_TaskCommandCandidate> fallbackCandidates =
+          _fallbackChoiceCandidates(selection);
+      _pendingTaskChoice = fallbackCandidates.isEmpty
+          ? null
+          : _PendingTaskChoice.updateTime(
+              candidates: fallbackCandidates,
+              newTime: newTime,
+              date: date,
+            );
       _finishLocalWriteText(
         _candidateSelectionMessage(
           selection,
@@ -626,6 +700,9 @@ class AssistantController extends Notifier<AssistantUiState> {
           actionText: '改哪一条',
           timeCandidates: oldTime?.candidates,
         ),
+        voiceContinuation: fallbackCandidates.isEmpty
+            ? _VoiceContinuationTrigger.none
+            : _VoiceContinuationTrigger.pendingTaskChoice,
       );
       return;
     }
@@ -685,7 +762,14 @@ class AssistantController extends Notifier<AssistantUiState> {
       return;
     }
     if (!selection.hasSingleMatch) {
-      _pendingTaskChoice = null;
+      final List<_TaskCommandCandidate> fallbackCandidates =
+          _fallbackChoiceCandidates(selection);
+      _pendingTaskChoice = fallbackCandidates.isEmpty
+          ? null
+          : _PendingTaskChoice.delete(
+              candidates: fallbackCandidates,
+              date: date,
+            );
       _finishLocalWriteText(
         _candidateSelectionMessage(
           selection,
@@ -693,6 +777,9 @@ class AssistantController extends Notifier<AssistantUiState> {
           actionText: '删哪一条',
           timeCandidates: times.isEmpty ? null : times.first.candidates,
         ),
+        voiceContinuation: fallbackCandidates.isEmpty
+            ? _VoiceContinuationTrigger.none
+            : _VoiceContinuationTrigger.pendingTaskChoice,
       );
       return;
     }
@@ -875,6 +962,15 @@ class AssistantController extends Notifier<AssistantUiState> {
       );
     }
     return candidates;
+  }
+
+  List<_TaskCommandCandidate> _fallbackChoiceCandidates(
+    _TaskCandidateSelection selection,
+  ) {
+    if (selection.queryError != null || selection.allCandidates.isEmpty) {
+      return const <_TaskCommandCandidate>[];
+    }
+    return selection.allCandidates.take(5).toList(growable: false);
   }
 
   String _candidateSelectionMessage(
@@ -1370,7 +1466,7 @@ class AssistantController extends Notifier<AssistantUiState> {
     _cancelFollowUpWindow();
     _lastEntrySource = source;
     _aborted = false;
-    final bool useDrawer = source != AssistantEntrySource.quickVoice;
+    final bool useDrawer = _shouldUseDrawerSurface(source);
     final AssistantMessage userMsg = AssistantMessage(
       role: AssistantRole.user,
       content: displayText,
@@ -1390,7 +1486,12 @@ class AssistantController extends Notifier<AssistantUiState> {
       surfaceState: useDrawer
           ? AssistantSurfaceState.drawerOpen
           : AssistantSurfaceState.none,
-      clearCompactReply: true,
+      drawerOpenRequestId: useDrawer && !state.drawerOpen
+          ? state.drawerOpenRequestId + 1
+          : state.drawerOpenRequestId,
+      drawerScrollTarget: useDrawer && !state.drawerOpen
+          ? AssistantDrawerScrollTarget.latestMessage
+          : state.drawerScrollTarget,
       clearAnswerCard: true,
       clearError: true,
       clearErrorState: true,
@@ -1766,7 +1867,7 @@ class AssistantController extends Notifier<AssistantUiState> {
       content: '',
       streaming: true,
     );
-    final bool useDrawer = source != AssistantEntrySource.quickVoice;
+    final bool useDrawer = _shouldUseDrawerSurface(source);
     state = state.copyWith(
       drawerOpen: useDrawer,
       stage: AssistantStage.think,
@@ -1777,16 +1878,50 @@ class AssistantController extends Notifier<AssistantUiState> {
       surfaceState: useDrawer
           ? AssistantSurfaceState.drawerOpen
           : AssistantSurfaceState.none,
-      clearCompactReply: true,
+      drawerOpenRequestId: useDrawer && !state.drawerOpen
+          ? state.drawerOpenRequestId + 1
+          : state.drawerOpenRequestId,
+      drawerScrollTarget: useDrawer && !state.drawerOpen
+          ? AssistantDrawerScrollTarget.latestMessage
+          : state.drawerScrollTarget,
       clearAnswerCard: true,
       clearError: true,
       clearErrorState: true,
+      voiceEcho: _voiceEchoForTaskStart(text, status: status),
       progress: AssistantProgressState(
         mode: AssistantExecutionMode.local,
         phase: AssistantProgressPhase.routing,
         status: status,
         statusOrigin: AssistantProgressOrigin.uxHint,
       ),
+    );
+  }
+
+  AssistantVoiceEchoState? _voiceEchoForTaskStart(
+    String text, {
+    required String status,
+  }) {
+    final String normalized = text.trim();
+    if (normalized.isEmpty) {
+      return null;
+    }
+    final AssistantVoiceEchoState current = state.voiceEcho;
+    final bool fromVoice =
+        current.phase == AssistantVoiceEchoPhase.finalText ||
+        current.phase == AssistantVoiceEchoPhase.listening ||
+        current.phase == AssistantVoiceEchoPhase.processing;
+    if (!fromVoice) {
+      return null;
+    }
+    final String raw = current.rawFinalText.trim().isEmpty
+        ? normalized
+        : current.rawFinalText.trim();
+    final bool cleaned = current.cleaned || raw != normalized;
+    return AssistantVoiceEchoState.processing(
+      rawFinalText: raw,
+      finalText: normalized,
+      cleaned: cleaned,
+      displayText: '$status：$normalized',
     );
   }
 
@@ -1810,7 +1945,8 @@ class AssistantController extends Notifier<AssistantUiState> {
         drawerOpen: true,
         replySurface: AssistantReplySurface.drawer,
         surfaceState: AssistantSurfaceState.drawerOpen,
-        clearCompactReply: true,
+        drawerOpenRequestId: state.drawerOpenRequestId + 1,
+        drawerScrollTarget: AssistantDrawerScrollTarget.latestMessage,
         clearAnswerCard: true,
       );
     }
@@ -2455,21 +2591,26 @@ class AssistantController extends Notifier<AssistantUiState> {
     AssistantConfirmPreview preview, {
     bool resumeConversationAfterConfirm = true,
   }) {
-    final bool useFullscreenAnswer =
-        _lastEntrySource == AssistantEntrySource.quickVoice;
+    final bool useDrawer = _shouldUseDrawerSurface(_lastEntrySource);
+    final bool useFullscreenAnswer = !useDrawer;
     state = state.copyWith(
       stage: AssistantStage.confirm,
-      drawerOpen: !useFullscreenAnswer,
+      drawerOpen: useDrawer,
       replySurface: useFullscreenAnswer
           ? AssistantReplySurface.none
           : AssistantReplySurface.drawer,
       surfaceState: useFullscreenAnswer
           ? AssistantSurfaceState.fullscreenAnswer
           : AssistantSurfaceState.drawerOpen,
+      drawerOpenRequestId: useDrawer && !state.drawerOpen
+          ? state.drawerOpenRequestId + 1
+          : state.drawerOpenRequestId,
+      drawerScrollTarget: useFullscreenAnswer
+          ? state.drawerScrollTarget
+          : AssistantDrawerScrollTarget.pendingConfirm,
       answerCardKind: useFullscreenAnswer ? AnswerCardKind.confirm : null,
       answerCardText: useFullscreenAnswer ? preview.title : null,
       clearAnswerCard: !useFullscreenAnswer,
-      clearCompactReply: true,
       pendingConfirm: AssistantPendingConfirm(
         toolCall: call,
         preview: preview,
@@ -2505,6 +2646,7 @@ class AssistantController extends Notifier<AssistantUiState> {
         surfaceState: AssistantSurfaceState.none,
         clearAnswerCard: true,
         clearProgress: true,
+        clearVoiceEcho: true,
       );
       return;
     }
@@ -2515,6 +2657,7 @@ class AssistantController extends Notifier<AssistantUiState> {
           ? AssistantSurfaceState.drawerOpen
           : AssistantSurfaceState.none,
       clearAnswerCard: true,
+      clearVoiceEcho: true,
       progress: const AssistantProgressState(
         mode: AssistantExecutionMode.local,
         phase: AssistantProgressPhase.executing,
@@ -2561,6 +2704,7 @@ class AssistantController extends Notifier<AssistantUiState> {
             ? AssistantSurfaceState.drawerOpen
             : AssistantSurfaceState.none,
         clearAnswerCard: true,
+        clearVoiceEcho: true,
         progress: const AssistantProgressState(
           mode: AssistantExecutionMode.local,
           phase: AssistantProgressPhase.cancelled,
@@ -2584,6 +2728,7 @@ class AssistantController extends Notifier<AssistantUiState> {
             ? AssistantSurfaceState.drawerOpen
             : AssistantSurfaceState.none,
         clearAnswerCard: true,
+        clearVoiceEcho: true,
         progress: const AssistantProgressState(
           mode: AssistantExecutionMode.local,
           phase: AssistantProgressPhase.cancelled,
@@ -2602,6 +2747,7 @@ class AssistantController extends Notifier<AssistantUiState> {
           ? AssistantSurfaceState.drawerOpen
           : AssistantSurfaceState.none,
       clearAnswerCard: true,
+      clearVoiceEcho: true,
       progress: const AssistantProgressState(
         mode: AssistantExecutionMode.local,
         phase: AssistantProgressPhase.cancelled,
@@ -2626,6 +2772,7 @@ class AssistantController extends Notifier<AssistantUiState> {
     state = state.copyWith(
       clearPendingConfirm: true,
       clearPendingWriteDraft: true,
+      clearVoiceEcho: true,
     );
     _appendAssistantPlaceholder();
     _finishLocalWriteText(message);
@@ -2696,8 +2843,8 @@ class AssistantController extends Notifier<AssistantUiState> {
     // 抽屉打开仍在抽屉内 _ProactiveSuggestionCard 显示（沉浸模式）
     final AssistantSurfaceState? newSurface =
         suggestion != null && !state.drawerOpen
-            ? AssistantSurfaceState.topBannerPush
-            : null;
+        ? AssistantSurfaceState.topBannerPush
+        : null;
     state = state.copyWith(
       proactiveSuggestion: suggestion,
       clearProactiveSuggestion: suggestion == null,
@@ -3087,6 +3234,7 @@ class AssistantController extends Notifier<AssistantUiState> {
     _cancelOpenMicWait();
     _cancelFollowUpWindow();
     _cancelVoiceContinuation();
+    _cancelVoiceEchoHide();
     _teardownVoice();
     _lastPublicResponseId = null;
     _lastPublicMode = null;
@@ -3161,6 +3309,7 @@ class AssistantController extends Notifier<AssistantUiState> {
     bool openDrawer = true,
     AssistantListeningMode mode = AssistantListeningMode.openMic,
   }) async {
+    _cancelVoiceEchoHide();
     final _VoiceContinuationTrigger trigger = _nextStartListeningTrigger;
     _nextStartListeningTrigger = _VoiceContinuationTrigger.none;
     if (state.stage == AssistantStage.listen) return;
@@ -3174,21 +3323,40 @@ class AssistantController extends Notifier<AssistantUiState> {
         hasPendingConfirm &&
         state.surfaceState != AssistantSurfaceState.fullscreenAnswer;
     final bool willOpenDrawer = forceDrawerForConfirm ? true : openDrawer;
+    final bool openingDrawer = willOpenDrawer && !state.drawerOpen;
+    final bool preserveFullscreenAnswer =
+        !willOpenDrawer &&
+        state.surfaceState == AssistantSurfaceState.fullscreenAnswer;
     state = state.copyWith(
       drawerOpen: willOpenDrawer,
       stage: AssistantStage.listen,
       replySurface: AssistantReplySurface.none,
       // 抽屉打开走"沉浸模式"（partial 显示在抽屉内 _ListenStrip）；
-      // 抽屉关闭走"快速模式"，顶部浮窗显示 partial（决策 #2）
+      // 抽屉关闭：partial 由球周围的 _ListenStrip 显示（不走顶部浮窗——
+      // _ListenStrip 视觉更精致+功能更全：音波/mode 区分/秒倒数/紧贴球的视觉焦点）。
       surfaceState: willOpenDrawer
           ? AssistantSurfaceState.drawerOpen
-          : AssistantSurfaceState.topBannerListen,
-      clearCompactReply: true,
-      clearAnswerCard: true,
+          : (preserveFullscreenAnswer
+                ? AssistantSurfaceState.fullscreenAnswer
+                : AssistantSurfaceState.none),
+      drawerOpenRequestId: openingDrawer
+          ? state.drawerOpenRequestId + 1
+          : state.drawerOpenRequestId,
+      drawerScrollTarget: openingDrawer
+          ? (hasPendingConfirm
+                ? AssistantDrawerScrollTarget.pendingConfirm
+                : AssistantDrawerScrollTarget.latestMessage)
+          : state.drawerScrollTarget,
+      clearAnswerCard: !preserveFullscreenAnswer,
       listeningMode: mode,
       listenPartialText: '',
       listenWindowRemainingMs: 0,
       clearListenError: true,
+      voiceEcho: AssistantVoiceEchoState.listening(
+        displayText: mode == AssistantListeningMode.pressToTalk
+            ? '我在听，松开手就发出去'
+            : '我在听，你可以直接说',
+      ),
       clearProgress: true,
     );
 
@@ -3207,7 +3375,9 @@ class AssistantController extends Notifier<AssistantUiState> {
       state = state.copyWith(
         stage: AssistantStage.idle,
         listenError: '没有麦克风权限',
+        voiceEcho: const AssistantVoiceEchoState.error(displayText: '没有麦克风权限'),
       );
+      _scheduleVoiceEchoHide();
       _teardownVoice();
       return;
     }
@@ -3226,7 +3396,9 @@ class AssistantController extends Notifier<AssistantUiState> {
       state = state.copyWith(
         stage: AssistantStage.idle,
         listenError: '讯飞连接失败：$e',
+        voiceEcho: const AssistantVoiceEchoState.error(displayText: '识别服务连接失败'),
       );
+      _scheduleVoiceEchoHide();
       _teardownVoice();
       return;
     }
@@ -3234,7 +3406,10 @@ class AssistantController extends Notifier<AssistantUiState> {
     try {
       final Stream<Uint8List> frames = await recorder.start();
       _recorderSub = frames.listen(
-        (Uint8List frame) => client.sendAudio(frame),
+        (Uint8List frame) {
+          client.sendAudio(frame);
+          _handleOutgoingPcmFrameForSpeech(frame);
+        },
         onError: (Object err, StackTrace _) {
           state = state.copyWith(listenError: '录音异常：$err');
         },
@@ -3247,34 +3422,22 @@ class AssistantController extends Notifier<AssistantUiState> {
       state = state.copyWith(
         stage: AssistantStage.idle,
         listenError: '录音启动失败：$e',
+        voiceEcho: const AssistantVoiceEchoState.error(displayText: '录音启动失败'),
       );
+      _scheduleVoiceEchoHide();
       _teardownVoice();
     }
   }
 
-  /// 把 recorder 的本地音频能量转发到全局 ValueNotifier（供 UI 动画订阅）；
-  /// 同时做"用户开口"端点检测：连续 ≥ [_kSpeechHoldFrames] 帧 RMS ≥ [_kSpeechRmsThreshold]
-  /// 即触发 [_markSpeechDetectedInOpenMic]，与 ASR partial 双轨并行，谁先到算谁。
+  /// 把 recorder 的本地音频能量转发到全局 ValueNotifier（供 UI 动画订阅）。
+  /// 开口检测走实际送给讯飞的 PCM 帧，避免 UI 监听链路异常影响端点判断。
   void _attachAudioLevelListener(PcmStreamRecorder recorder) {
     _detachAudioLevelListener();
     _consecutiveLoudFrames = 0;
     final ValueListenable<double> listenable = recorder.audioLevel;
     final ValueNotifier<double> publish = ref.read(liveAudioLevelProvider);
     void onLevel() {
-      final double level = listenable.value;
-      publish.value = level;
-      if (state.listeningMode != AssistantListeningMode.openMic ||
-          _heardSpeechInCurrentOpenMic) {
-        return;
-      }
-      if (level >= _kSpeechRmsThreshold) {
-        _consecutiveLoudFrames += 1;
-        if (_consecutiveLoudFrames >= _kSpeechHoldFrames) {
-          _markSpeechDetectedInOpenMic();
-        }
-      } else {
-        _consecutiveLoudFrames = 0;
-      }
+      publish.value = listenable.value;
     }
 
     listenable.addListener(onLevel);
@@ -3295,6 +3458,37 @@ class AssistantController extends Notifier<AssistantUiState> {
       // container 销毁中（_teardownVoice 经 onDispose 触发时）read 会抛，
       // 此场景归零无意义，安全忽略。
     }
+  }
+
+  void _handleOutgoingPcmFrameForSpeech(Uint8List frame) {
+    if (state.listeningMode != AssistantListeningMode.openMic ||
+        _heardSpeechInCurrentOpenMic) {
+      return;
+    }
+    final double level = _computePcmRms(frame);
+    if (level >= _kSpeechRmsThreshold) {
+      _consecutiveLoudFrames += 1;
+      if (_consecutiveLoudFrames >= _kSpeechHoldFrames) {
+        _markSpeechDetectedInOpenMic();
+      }
+    } else {
+      _consecutiveLoudFrames = 0;
+    }
+  }
+
+  double _computePcmRms(Uint8List frame) {
+    final ByteData view = ByteData.sublistView(frame);
+    final int sampleCount = frame.lengthInBytes ~/ 2;
+    if (sampleCount == 0) {
+      return 0;
+    }
+    double sumSquare = 0;
+    for (int i = 0; i < sampleCount; i++) {
+      final int sample = view.getInt16(i * 2, Endian.little);
+      final double normalized = sample / 32768.0;
+      sumSquare += normalized * normalized;
+    }
+    return math.sqrt(sumSquare / sampleCount).clamp(0.0, 1.0);
   }
 
   /// 松手 / 自动停 → 推 end frame，等服务端 final。
@@ -3318,24 +3512,111 @@ class AssistantController extends Notifier<AssistantUiState> {
     await _asrClient?.stop();
     final AssistantSurfaceState? clearedTopBanner =
         state.surfaceState == AssistantSurfaceState.topBannerListen
-            ? AssistantSurfaceState.none
-            : null;
+        ? AssistantSurfaceState.none
+        : null;
     state = state.copyWith(
       stage: AssistantStage.idle,
       listenPartialText: '',
       listenWindowRemainingMs: 0,
       surfaceState: clearedTopBanner,
+      clearVoiceEcho: true,
     );
     _teardownVoice();
   }
 
+  AssistantVoiceEchoState _voiceEchoFinalState({
+    required String rawFinalText,
+    required String finalText,
+    required bool wakeWordOnly,
+  }) {
+    final String raw = rawFinalText.trim();
+    final String normalized = finalText.trim();
+    if (wakeWordOnly) {
+      return const AssistantVoiceEchoState.finalized(
+        rawFinalText: '',
+        finalText: '小治',
+        displayText: '我在，你继续说',
+      );
+    }
+    if (normalized.isEmpty && raw.isEmpty) {
+      return const AssistantVoiceEchoState.error(displayText: '这次没听清');
+    }
+    if (normalized.isEmpty) {
+      return AssistantVoiceEchoState.finalized(
+        rawFinalText: raw,
+        finalText: raw,
+        displayText: '听到：$raw',
+      );
+    }
+    final bool cleaned = raw.isNotEmpty && raw != normalized;
+    return AssistantVoiceEchoState.finalized(
+      rawFinalText: raw,
+      finalText: normalized,
+      cleaned: cleaned,
+      displayText: cleaned ? '我理解为：$normalized' : '听到：$normalized',
+    );
+  }
+
+  void _markVoiceEchoProcessingFor(String text) {
+    final String normalized = text.trim();
+    if (normalized.isEmpty) {
+      return;
+    }
+    _cancelVoiceEchoHide();
+    final AssistantVoiceEchoState current = state.voiceEcho;
+    final bool fromVoice =
+        current.phase == AssistantVoiceEchoPhase.finalText ||
+        current.phase == AssistantVoiceEchoPhase.listening;
+    if (!fromVoice) {
+      return;
+    }
+    final String raw = current.rawFinalText.trim().isEmpty
+        ? normalized
+        : current.rawFinalText.trim();
+    final bool cleaned = current.cleaned || raw != normalized;
+    state = state.copyWith(
+      voiceEcho: AssistantVoiceEchoState.processing(
+        rawFinalText: raw,
+        finalText: normalized,
+        cleaned: cleaned,
+        displayText: cleaned ? '正在处理：$normalized' : '正在处理你刚说的内容',
+      ),
+    );
+  }
+
+  void _scheduleVoiceEchoHide({
+    Duration delay = const Duration(milliseconds: 1800),
+  }) {
+    _cancelVoiceEchoHide();
+    _voiceEchoHideTimer = Timer(delay, () {
+      _voiceEchoHideTimer = null;
+      if (state.voiceEcho.isVisible) {
+        state = state.copyWith(clearVoiceEcho: true);
+      }
+    });
+  }
+
+  void _cancelVoiceEchoHide() {
+    _voiceEchoHideTimer?.cancel();
+    _voiceEchoHideTimer = null;
+  }
+
   void _handleAsrEvent(AsrEvent event) {
     if (event is AsrPartialEvent) {
-      if (event.text.trim().isNotEmpty) {
+      final String partial = event.text.trim();
+      if (partial.isNotEmpty) {
         _markSpeechDetectedInOpenMic();
       }
-      state = state.copyWith(listenPartialText: event.text);
+      state = state.copyWith(
+        listenPartialText: event.text,
+        voiceEcho: AssistantVoiceEchoState.listening(
+          partialText: partial,
+          displayText: partial.isEmpty ? '' : '识别中：$partial',
+          remainingMs: state.listenWindowRemainingMs,
+        ),
+      );
     } else if (event is AsrFinalEvent) {
+      final String rawFinalText = event.text.trim();
       final _VoiceCommandText voiceText = _normalizeVoiceCommandText(
         event.text,
       );
@@ -3348,13 +3629,18 @@ class AssistantController extends Notifier<AssistantUiState> {
       // ASR 收到 final 后顶部 banner 立刻淡出，让球切"在想"+ 大卡接管
       final AssistantSurfaceState? clearedTopBanner =
           state.surfaceState == AssistantSurfaceState.topBannerListen
-              ? AssistantSurfaceState.none
-              : null;
+          ? AssistantSurfaceState.none
+          : null;
       state = state.copyWith(
         stage: AssistantStage.idle,
         listenPartialText: '',
         listenWindowRemainingMs: 0,
         surfaceState: clearedTopBanner,
+        voiceEcho: _voiceEchoFinalState(
+          rawFinalText: rawFinalText,
+          finalText: text,
+          wakeWordOnly: voiceText.wakeWordOnly,
+        ),
       );
       if (_autoSendOnFinal && voiceText.wakeWordOnly) {
         unawaited(
@@ -3372,6 +3658,8 @@ class AssistantController extends Notifier<AssistantUiState> {
           source: _listeningSource,
           allowVoiceContinuation: true,
         );
+      } else {
+        _scheduleVoiceEchoHide();
       }
     } else if (event is AsrErrorEvent) {
       _cancelOpenMicWait();
@@ -3379,16 +3667,23 @@ class AssistantController extends Notifier<AssistantUiState> {
         stage: AssistantStage.idle,
         listenError: '识别异常 (${event.code}): ${event.message}',
         listenWindowRemainingMs: 0,
+        voiceEcho: AssistantVoiceEchoState.error(
+          displayText: '识别异常：${event.message}',
+        ),
       );
+      _scheduleVoiceEchoHide();
       _teardownVoice();
     }
   }
 
-  void _speakAsync(String text) {
+  void _speakAsync(
+    String text, {
+    AssistantSpeechMode speechMode = AssistantSpeechMode.digest,
+  }) {
     final TtsFacade tts = ref.read(ttsFacadeProvider);
     final String voice = ref.read(currentTtsVoiceProvider);
     final double rate = ref.read(currentTtsSpeedProvider);
-    final String speakText = _buildSpeechText(text);
+    final String speakText = _buildSpeechText(text, mode: speechMode);
     if (speakText.isEmpty) {
       return;
     }
@@ -3400,32 +3695,6 @@ class AssistantController extends Notifier<AssistantUiState> {
       // TTS 失败不影响对话流程，记到独立的 ttsError 通道。
       state = state.copyWith(ttsError: 'TTS 播报失败：$err');
     });
-  }
-
-  Future<void> _speakCompactReplyAndStartFollowUp(String text) async {
-    final TtsFacade tts = ref.read(ttsFacadeProvider);
-    final String voice = ref.read(currentTtsVoiceProvider);
-    final double rate = ref.read(currentTtsSpeedProvider);
-    final String speakText = _buildSpeechText(text);
-    if (speakText.isEmpty) {
-      _startFollowUpWindow();
-      return;
-    }
-
-    try {
-      await tts.speakAndWaitComplete(speakText, voice: voice, rate: rate);
-    } catch (err) {
-      if (isTtsInterrupted(err)) {
-        return;
-      }
-      state = state.copyWith(ttsError: 'TTS 播报失败：$err');
-    }
-
-    if (state.replySurface == AssistantReplySurface.compactCard &&
-        state.compactReplyText != null &&
-        state.compactReplyText!.trim().isNotEmpty) {
-      _startFollowUpWindow();
-    }
   }
 
   Future<void> _speakFullscreenAnswerAndStartDismiss(String text) async {
@@ -3459,7 +3728,7 @@ class AssistantController extends Notifier<AssistantUiState> {
     _flushPendingReminderIfAny();
   }
 
-  Future<void> replayLatestAssistantReply() async {
+  Future<bool> replayLatestAssistantReply({bool full = false}) async {
     final AssistantMessage latest = state.messages.lastWhere(
       (AssistantMessage message) =>
           message.role == AssistantRole.assistant &&
@@ -3469,23 +3738,56 @@ class AssistantController extends Notifier<AssistantUiState> {
           AssistantMessage(role: AssistantRole.assistant, content: ''),
     );
     if (latest.content.trim().isEmpty) {
-      return;
+      _speakAsync('我还没有可以播报的内容。');
+      return false;
     }
-    _speakAsync(latest.content);
+    _speakAsync(
+      _speechSourceForMessage(latest, full: full),
+      speechMode: full ? AssistantSpeechMode.full : AssistantSpeechMode.digest,
+    );
+    return true;
   }
 
-  void hideCompactReply() {
-    _cancelFollowUpWindow();
-    state = state.copyWith(
-      replySurface: AssistantReplySurface.none,
-      clearCompactReply: true,
-      surfaceState: AssistantSurfaceState.none,
-      clearAnswerCard: true,
-    );
+  String _speechSourceForMessage(
+    AssistantMessage message, {
+    required bool full,
+  }) {
+    final AssistantResultCard? card = message.resultCard;
+    if (full && card is NewsCard) {
+      return _fullNewsSpeechText(message.content, card);
+    }
+    return message.content;
+  }
+
+  String _fullNewsSpeechText(String visibleText, NewsCard card) {
+    final List<String> parts = <String>[];
+    final String lead = visibleText.trim();
+    if (lead.isNotEmpty) {
+      parts.add(lead);
+    } else {
+      parts.add('${card.title}。${card.summary}');
+    }
+    for (int i = 0; i < card.items.length; i++) {
+      final NewsItem item = card.items[i];
+      final List<String> itemParts = <String>['第${i + 1}条，${item.title}'];
+      if ((item.summary ?? '').isNotEmpty) {
+        itemParts.add(item.summary!);
+      }
+      final String meta = <String>[
+        if ((item.source ?? '').isNotEmpty) item.source!,
+        if ((item.timeLabel ?? '').isNotEmpty) item.timeLabel!,
+      ].join('，');
+      if (meta.isNotEmpty) {
+        itemParts.add(meta);
+      }
+      parts.add('${itemParts.join('。')}。');
+    }
+    return parts.join('\n');
   }
 
   void hideAnswerCard({bool stopSpeaking = true}) {
     _cancelFollowUpWindow();
+    _cancelVoiceEchoHide();
     if (stopSpeaking) {
       // ignore: discarded_futures
       ref.read(ttsFacadeProvider).stop();
@@ -3495,9 +3797,9 @@ class AssistantController extends Notifier<AssistantUiState> {
       surfaceState: state.drawerOpen
           ? AssistantSurfaceState.drawerOpen
           : AssistantSurfaceState.none,
-      clearCompactReply: true,
       clearAnswerCard: true,
       clearReminder: true,
+      clearVoiceEcho: true,
     );
   }
 
@@ -3579,7 +3881,8 @@ class AssistantController extends Notifier<AssistantUiState> {
       drawerOpen: true,
       replySurface: AssistantReplySurface.drawer,
       surfaceState: AssistantSurfaceState.drawerOpen,
-      clearCompactReply: true,
+      drawerOpenRequestId: state.drawerOpenRequestId + 1,
+      drawerScrollTarget: AssistantDrawerScrollTarget.latestMessage,
       clearAnswerCard: true,
     );
   }
@@ -3735,14 +4038,15 @@ class AssistantController extends Notifier<AssistantUiState> {
     final String finalContent = displayContent.text.trim().isEmpty
         ? '我这次没拿到有效结果。'
         : displayContent.text.trim();
-    const LegacySurfaceRouter router = LegacySurfaceRouter();
+    const AssistantSurfaceRouter router = AssistantSurfaceRouter();
     final AssistantReplySurface surface = router.resolve(
-      text: finalContent,
       entrySource: _lastEntrySource,
+      drawerOpen: state.drawerOpen,
     );
-    final bool useFullscreenAnswer =
-        surface == AssistantReplySurface.compactCard &&
-        router.shouldUseFullscreenAnswer(_lastEntrySource);
+    final bool useFullscreenAnswer = router.shouldUseFullscreenAnswer(
+      entrySource: _lastEntrySource,
+      drawerOpen: state.drawerOpen,
+    );
     final AnswerCardKind answerKind = router.classifyAnswer(
       state: state,
       content: displayContent,
@@ -3753,6 +4057,8 @@ class AssistantController extends Notifier<AssistantUiState> {
       streaming: false,
       resultCard: displayContent.resultCard,
     );
+    final bool opensDrawer =
+        surface == AssistantReplySurface.drawer && !state.drawerOpen;
     state = state.copyWith(
       stage: AssistantStage.idle,
       drawerOpen: surface == AssistantReplySurface.drawer,
@@ -3762,28 +4068,25 @@ class AssistantController extends Notifier<AssistantUiState> {
           : (surface == AssistantReplySurface.drawer
                 ? AssistantSurfaceState.drawerOpen
                 : AssistantSurfaceState.none),
+      drawerOpenRequestId: opensDrawer
+          ? state.drawerOpenRequestId + 1
+          : state.drawerOpenRequestId,
+      drawerScrollTarget: opensDrawer
+          ? AssistantDrawerScrollTarget.latestMessage
+          : state.drawerScrollTarget,
       answerCardKind: useFullscreenAnswer ? answerKind : null,
       answerCardText: useFullscreenAnswer ? finalContent : null,
       answerCardResultCard: useFullscreenAnswer
           ? displayContent.resultCard
           : null,
       clearAnswerCard: !useFullscreenAnswer,
-      compactReplyText:
-          !useFullscreenAnswer && surface == AssistantReplySurface.compactCard
-          ? finalContent
-          : null,
-      compactReplyCard:
-          !useFullscreenAnswer && surface == AssistantReplySurface.compactCard
-          ? displayContent.resultCard
-          : null,
       followUpRemainingMs: 0,
-      clearCompactReply:
-          useFullscreenAnswer || surface != AssistantReplySurface.compactCard,
       clearProgress: true,
       clearErrorState: true,
       clearTtsError: true,
     );
     _cancelFollowUpWindow();
+    _scheduleVoiceEchoHide();
 
     if (finalContent.trim().isEmpty) return;
 
@@ -3791,6 +4094,7 @@ class AssistantController extends Notifier<AssistantUiState> {
     final bool shouldSpeak = decideAutoSpeak(
       entrySource: _lastEntrySource,
       surface: surface,
+      fullscreenAnswer: useFullscreenAnswer,
       mode: mode,
       sessionMute: state.sessionMute,
     );
@@ -3815,10 +4119,6 @@ class AssistantController extends Notifier<AssistantUiState> {
       // 全屏大卡：播报完成后再启动 5 秒消散计时。
       // ignore: discarded_futures
       _speakFullscreenAnswerAndStartDismiss(finalContent);
-    } else if (surface == AssistantReplySurface.compactCard) {
-      // 短答卡片：播报 + 5 秒持续对话窗（行为同原版）。
-      // ignore: discarded_futures
-      _speakCompactReplyAndStartFollowUp(finalContent);
     } else if (surface == AssistantReplySurface.drawer) {
       // 抽屉播报：fire-and-forget，不启动持续对话窗（避免抽屉里听到声音
       // 后又要被 5 秒倒计时催着说话，与"深度阅读"姿势冲突）。
@@ -3827,9 +4127,7 @@ class AssistantController extends Notifier<AssistantUiState> {
   }
 
   void _showAssistantError(String message, {AssistantErrorState? errorState}) {
-    final bool useFullscreenAnswer =
-        _lastEntrySource == AssistantEntrySource.quickVoice &&
-        !state.drawerOpen;
+    final bool useFullscreenAnswer = !_shouldUseDrawerSurface(_lastEntrySource);
     state = state.copyWith(
       stage: AssistantStage.error,
       drawerOpen: useFullscreenAnswer ? false : state.drawerOpen,
@@ -3850,32 +4148,20 @@ class AssistantController extends Notifier<AssistantUiState> {
       errorState: errorState,
       clearErrorState: errorState == null,
       clearProgress: true,
+      voiceEcho: state.voiceEcho.isVisible
+          ? state.voiceEcho.copyWith(phase: AssistantVoiceEchoPhase.error)
+          : null,
     );
+    _scheduleVoiceEchoHide();
     if (useFullscreenAnswer) {
       _startFollowUpWindow();
     }
   }
 
-  String _buildSpeechText(String text) {
-    final String normalized = text
-        .replaceAll(RegExp(r'[`*_#>-]'), ' ')
-        .replaceAll(RegExp(r'\s+'), ' ')
-        .trim();
-    if (normalized.isEmpty) {
-      return '';
-    }
-
-    final RegExp firstSentencePattern = RegExp(r'^.{1,120}?[。！？!?\.](?=\s|$)');
-    final Match? match = firstSentencePattern.firstMatch(normalized);
-    if (match != null) {
-      return match.group(0)!.trim();
-    }
-
-    if (normalized.length <= 120) {
-      return normalized;
-    }
-    return '${normalized.substring(0, 120).trim()}...';
-  }
+  String _buildSpeechText(
+    String text, {
+    AssistantSpeechMode mode = AssistantSpeechMode.digest,
+  }) => buildAssistantSpeechText(text, mode: mode);
 
   void _teardownVoice() {
     _cancelOpenMicWait();
@@ -3924,7 +4210,10 @@ class AssistantController extends Notifier<AssistantUiState> {
     final TtsPlaybackMode mode = ref.read(currentTtsPlaybackModeProvider);
     final bool shouldSpeak = decideAutoSpeak(
       entrySource: _lastEntrySource,
-      surface: AssistantReplySurface.drawer,
+      surface: state.drawerOpen
+          ? AssistantReplySurface.drawer
+          : AssistantReplySurface.none,
+      fullscreenAnswer: !state.drawerOpen,
       mode: mode,
       sessionMute: state.sessionMute,
     );
@@ -3998,7 +4287,10 @@ class AssistantController extends Notifier<AssistantUiState> {
     _cancelOpenMicWait();
     _heardSpeechInCurrentOpenMic = false;
     final int totalMs = wait.inMilliseconds;
-    state = state.copyWith(listenWindowRemainingMs: totalMs);
+    state = state.copyWith(
+      listenWindowRemainingMs: totalMs,
+      voiceEcho: state.voiceEcho.copyWith(remainingMs: totalMs),
+    );
     _openMicTicker = Timer.periodic(const Duration(milliseconds: 200), (_) {
       if (state.stage != AssistantStage.listen ||
           state.listeningMode != AssistantListeningMode.openMic ||
@@ -4009,7 +4301,11 @@ class AssistantController extends Notifier<AssistantUiState> {
       final int nextMs =
           state.listenWindowRemainingMs -
           const Duration(milliseconds: 200).inMilliseconds;
-      state = state.copyWith(listenWindowRemainingMs: nextMs.clamp(0, totalMs));
+      final int clamped = nextMs.clamp(0, totalMs);
+      state = state.copyWith(
+        listenWindowRemainingMs: clamped,
+        voiceEcho: state.voiceEcho.copyWith(remainingMs: clamped),
+      );
     });
     _openMicTimeoutTimer = Timer(wait, () async {
       if (state.stage != AssistantStage.listen ||
@@ -4027,7 +4323,9 @@ class AssistantController extends Notifier<AssistantUiState> {
         listenPartialText: '',
         listenError: '这次没听到你说话',
         listenWindowRemainingMs: 0,
+        voiceEcho: const AssistantVoiceEchoState.error(displayText: '这次没听到你说话'),
       );
+      _scheduleVoiceEchoHide();
       _teardownVoice();
     });
   }
@@ -4040,17 +4338,34 @@ class AssistantController extends Notifier<AssistantUiState> {
       return;
     }
     _heardSpeechInCurrentOpenMic = true;
-    _cancelOpenMicWait();
+    _cancelOpenMicWait(keepSpeechDetected: true);
+    if (state.voiceEcho.phase == AssistantVoiceEchoPhase.listening &&
+        state.voiceEcho.partialText.trim().isEmpty) {
+      state = state.copyWith(
+        voiceEcho: state.voiceEcho.copyWith(
+          displayText: '我在听，你继续说',
+          remainingMs: 0,
+        ),
+      );
+    }
   }
 
-  void _cancelOpenMicWait({bool resetState = true}) {
+  void _cancelOpenMicWait({
+    bool resetState = true,
+    bool keepSpeechDetected = false,
+  }) {
     _openMicTimeoutTimer?.cancel();
     _openMicTimeoutTimer = null;
     _openMicTicker?.cancel();
     _openMicTicker = null;
-    _heardSpeechInCurrentOpenMic = false;
+    if (!keepSpeechDetected) {
+      _heardSpeechInCurrentOpenMic = false;
+    }
     if (resetState && state.listenWindowRemainingMs != 0) {
-      state = state.copyWith(listenWindowRemainingMs: 0);
+      state = state.copyWith(
+        listenWindowRemainingMs: 0,
+        voiceEcho: state.voiceEcho.copyWith(remainingMs: 0),
+      );
     }
   }
 
@@ -4078,12 +4393,7 @@ class AssistantController extends Notifier<AssistantUiState> {
   }
 
   bool get _hasTimedAnswerSurface {
-    final bool hasCompactReply =
-        state.replySurface == AssistantReplySurface.compactCard &&
-        state.compactReplyText != null &&
-        state.compactReplyText!.trim().isNotEmpty;
-    return hasCompactReply ||
-        (_isFullscreenAnswerActive && _answerCardAutoDismisses());
+    return _isFullscreenAnswerActive && _answerCardAutoDismisses();
   }
 
   void _startFollowUpWindow() {
@@ -4108,12 +4418,6 @@ class AssistantController extends Notifier<AssistantUiState> {
         state = state.copyWith(
           surfaceState: AssistantSurfaceState.none,
           clearAnswerCard: true,
-          followUpRemainingMs: 0,
-        );
-      } else {
-        state = state.copyWith(
-          replySurface: AssistantReplySurface.none,
-          clearCompactReply: true,
           followUpRemainingMs: 0,
         );
       }
@@ -4477,6 +4781,7 @@ _VoiceCommandText _normalizeVoiceCommandText(String raw) {
   if (_wakeWordOnlyPattern.hasMatch(compact)) {
     return const _VoiceCommandText('', wakeWordOnly: true);
   }
+  text = stripChineseFillers(text).trim();
   while (true) {
     final RegExpMatch? match = _leadingWakeWordPattern.firstMatch(text);
     if (match == null || match.start != 0) {
@@ -5034,15 +5339,16 @@ final RegExp _explicitPlacePattern = RegExp(
 /// 优先级（高 → 低）：
 /// 1. 会话级静音（`sessionMute == muted`）：永远不播
 /// 2. 全局模式 `silent`：永远不播
-/// 3. 全局模式 `always`：只要有承载面（compactCard / drawer）就播
-/// 4. 全局模式 `shortOnly`：只在 compactCard 上播
+/// 3. 全局模式 `always`：只要有承载面（fullscreenAnswer / drawer）就播
+/// 4. 全局模式 `shortOnly`：只在 fullscreenAnswer 上播
 /// 5. 全局模式 `auto`（默认）：
-///    - compactCard → 播
+///    - fullscreenAnswer → 播
 ///    - drawer → 看入口：drawerVoice / quickVoice 播；drawerText 不播
 ///    - none → 不播
 bool decideAutoSpeak({
   required AssistantEntrySource entrySource,
   required AssistantReplySurface surface,
+  required bool fullscreenAnswer,
   required TtsPlaybackMode mode,
   required AssistantSessionMute sessionMute,
 }) {
@@ -5051,13 +5357,14 @@ bool decideAutoSpeak({
     case TtsPlaybackMode.silent:
       return false;
     case TtsPlaybackMode.always:
-      return surface != AssistantReplySurface.none;
+      return fullscreenAnswer || surface != AssistantReplySurface.none;
     case TtsPlaybackMode.shortOnly:
-      return surface == AssistantReplySurface.compactCard;
+      return fullscreenAnswer;
     case TtsPlaybackMode.auto:
+      if (fullscreenAnswer) {
+        return true;
+      }
       switch (surface) {
-        case AssistantReplySurface.compactCard:
-          return true;
         case AssistantReplySurface.drawer:
           return entrySource == AssistantEntrySource.drawerVoice ||
               entrySource == AssistantEntrySource.quickVoice;

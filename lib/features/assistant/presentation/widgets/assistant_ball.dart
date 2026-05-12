@@ -11,7 +11,6 @@ class AssistantBall extends StatefulWidget {
     this.countdownProgress = 0,
     this.size = 48,
     this.audioLevel,
-    this.listenWindowRemainingMs = 0,
     super.key,
   });
 
@@ -23,15 +22,6 @@ class AssistantBall extends StatefulWidget {
   /// 非 listen 阶段忽略。
   final ValueListenable<double>? audioLevel;
 
-  /// 开麦倒计时余量。只在 listen 且 0 < ms <= 3000 时触发"快超时"视觉档：
-  /// 暖橙色调 + 呼吸节奏加快，给用户视觉暗示该开口。
-  final int listenWindowRemainingMs;
-
-  bool get _urgent =>
-      stage == AssistantStage.listen &&
-      listenWindowRemainingMs > 0 &&
-      listenWindowRemainingMs <= 3000;
-
   @override
   State<AssistantBall> createState() => _AssistantBallState();
 }
@@ -39,7 +29,6 @@ class AssistantBall extends StatefulWidget {
 class _AssistantBallState extends State<AssistantBall>
     with TickerProviderStateMixin {
   static const Duration _kIdleNormal = Duration(milliseconds: 2000);
-  static const Duration _kIdleUrgent = Duration(milliseconds: 600);
 
   late final AnimationController _idleCtrl = AnimationController(
     vsync: this,
@@ -54,12 +43,7 @@ class _AssistantBallState extends State<AssistantBall>
   @override
   void didUpdateWidget(covariant AssistantBall oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (widget._urgent != oldWidget._urgent) {
-      _idleCtrl.duration = widget._urgent ? _kIdleUrgent : _kIdleNormal;
-      _idleCtrl
-        ..stop()
-        ..repeat();
-    }
+    _idleCtrl.duration = _kIdleNormal;
   }
 
   @override
@@ -72,12 +56,10 @@ class _AssistantBallState extends State<AssistantBall>
   @override
   Widget build(BuildContext context) {
     final double s = widget.size;
-    final _BallStageStyle style = _styleForStage(
-      widget.stage,
-      urgent: widget._urgent,
-    );
-    final ValueListenable<double>? level =
-        widget.stage == AssistantStage.listen ? widget.audioLevel : null;
+    final _BallStageStyle style = _styleForStage(widget.stage);
+    final ValueListenable<double>? level = widget.stage == AssistantStage.listen
+        ? widget.audioLevel
+        : null;
     return SizedBox(
       width: s,
       height: s,
@@ -167,14 +149,7 @@ class _BallStageStyle {
   final Color foregroundColor;
 }
 
-_BallStageStyle _styleForStage(AssistantStage stage, {bool urgent = false}) {
-  if (urgent && stage == AssistantStage.listen) {
-    return const _BallStageStyle(
-      gradient: <Color>[Color(0xFFFFB36C), Color(0xFFFFA374)],
-      glowColor: Color(0xFFFFA374),
-      foregroundColor: Colors.white,
-    );
-  }
+_BallStageStyle _styleForStage(AssistantStage stage) {
   switch (stage) {
     case AssistantStage.listen:
       return const _BallStageStyle(
@@ -412,8 +387,10 @@ class _AmbientGlow extends StatelessWidget {
         final double baseOpacity = active
             ? 0.28 + 0.08 * math.sin(controller.value * math.pi * 2)
             : 0.16;
-        final double opacity =
-            (baseOpacity + levelBoost * 0.4).clamp(0.0, 0.85);
+        final double opacity = (baseOpacity + levelBoost * 0.4).clamp(
+          0.0,
+          0.85,
+        );
         return IgnorePointer(
           child: Container(
             width: size * pulse,

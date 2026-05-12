@@ -1,7 +1,7 @@
 # 助手交互系统 — 开发实施方案
 
 最近更新：2026-05-12。
-状态：**方案对齐，等开工**。
+状态：**核心交互已实施，待真机回归**。
 关联设计：`docs/assistant_interaction_design.md`（4 种 surface 设计稿）。
 
 ## 0. 总原则与不变量
@@ -14,7 +14,7 @@
 | 2 | 长按球 press-to-talk | 长按持续录音、`vad_eos` 8s | 长按对话失效 |
 | 3 | TTS facade（火山+讯飞）| `ttsFacadeProvider` 接口不变；只改"何时调用" | TTS 直接挂 |
 | 4 | NLU 语气词剥离 | `stripChineseFillers` 接入点不变 | "嗯，确认" 又识别失败 |
-| 5 | 语音端点检测 | `liveAudioLevelProvider` + `_kSpeechRmsThreshold` 不变 | 倒计时早断 |
+| 5 | 语音端点检测 | 倒计时只表示“等待开口”；用户一开口即停倒计时，录音继续等讯飞 final | 说话被截断 / 倒计时误导 |
 | 6 | 信息卡 5 类（weather/exchange/world_clock/poi）| 数据层 + 解析层不动；只改"渲染容器"（从抽屉气泡改为大卡内 inline）| 卡片显示异常 |
 | 7 | confirm 流程（pendingConfirm 状态机）| 现有触发与完成路径不变；只改"展示位置" | 创建日程流程崩 |
 | 8 | pending write draft（多轮补字段）| 草稿状态机不动 | 创建草稿流程崩 |
@@ -326,25 +326,33 @@ AnswerCardKind classify(AssistantUiState state, AssistantDisplayContent content)
 
 ---
 
-### Phase 6：接入 TopFloatingBanner，partial / 主动建议迁过来
+### Phase 6：语音回显 Dock 与主动建议 banner
 
-**目标**：ASR partial 从抽屉/球周围迁到顶部浮窗；proactive suggestion 走顶部 banner。
+**目标**：用户语音回显统一走 `VoiceEchoBar`；proactive suggestion 走顶部 banner。
+
+> 2026-05-12 最终实现：顶部 listen 浮窗已撤销。语音回显不进入大卡内部，改为“中间大卡 + 底部固定 Dock”。Dashboard 空闲在底部球附近显示，抽屉打开在抽屉内显示，全屏大卡打开时在屏幕下方固定 Dock 显示。详见 `docs/voice_echo_interaction_solution.md`。
 
 **任务**：
-1. controller 入口 `_handleAsrEvent` 中 partial 触发顶部浮窗显示
-2. `state.proactiveSuggestion` 触发 → 顶部浮窗（推送 banner 形态）
-3. 移除 `_CompactReplyCard` 内的 partial 显示逻辑（如有）
-4. workbench_shell_page 增加 `TopFloatingBanner` 渲染层
+1. controller 统一维护 `AssistantVoiceEchoState`
+2. `AsrPartialEvent` 更新 `VoiceEchoBar` 的“识别中”文本
+3. open mic 等待倒计时只在用户未开口时显示
+4. 用户开口后立即停倒计时，录音继续等讯飞 final
+5. 全屏大卡显示时，底部固定 `VoiceEchoBar` Dock；大卡给 Dock 预留空间
+6. `state.proactiveSuggestion` 触发 → 顶部浮窗（推送 banner 形态）
 
-**影响范围**：partial / 主动建议显示位置变。
-**风险**：用户在抽屉里说话时，partial 显示位置改变可能不直观 → 抽屉模式下 partial 仍在抽屉内显示？
+**影响范围**：语音回显位置、open mic 倒计时、主动建议显示位置。
+**风险**：多处 UI 可能同时读取 `listenWindowRemainingMs`，导致看起来倒计时没有停止；已移除小治球的倒计时视觉态，只保留回显条倒计时。
 **决策**：
-- **抽屉打开时**：partial 显示在抽屉内（保留现有 `_ListenStrip` 逻辑）
-- **抽屉关闭时**：partial 显示在顶部浮窗（新逻辑）
+- **抽屉打开时**：partial 显示在抽屉内 `VoiceEchoBar`
+- **抽屉关闭普通唤醒时**：partial 显示在底部球附近 `VoiceEchoBar`
+- **全屏大卡打开时**：partial 显示在底部固定 Dock，不显示在大卡内部
+- **顶部 banner**：只承载主动建议/系统推送，不承载用户语音
 **验收**：
-- [ ] 球唤醒说话 → 顶部浮窗显示识别中文字
-- [ ] 抽屉打开后语音输入 → 抽屉内显示识别中文字（不在顶部）
-- [ ] proactive suggestion 触发 → 顶部 banner，5s 消散 / 点展开进抽屉
+- [x] 球唤醒说话 → 底部回显条显示识别中文字
+- [x] 抽屉打开后语音输入 → 抽屉内显示识别中文字
+- [x] 全屏大卡显示中说话 → 底部固定 Dock 显示识别中文字
+- [x] 用户一开口 → 倒计时停止，录音继续等待 final
+- [x] proactive suggestion 触发 → 顶部 banner，点展开进抽屉
 
 ---
 
@@ -550,5 +558,6 @@ AnswerCardKind classify(AssistantUiState state, AssistantDisplayContent content)
 - `docs/info_card_system.md` — 信息卡 5 类（被本方案"装入"大卡 3a 的内容）
 - `docs/tts_voice_optimization.md` — 火山+讯飞 TTS facade（被本方案在大卡消散逻辑里使用）
 - `docs/nlu_filler_stripper.md` — NLU 语气词剥离（不动，但要确认大卡里 partial 显示用清理后文本）
-- `docs/voice_endpointing_strategy.md` — 语音端点检测（不动）
+- `docs/voice_endpointing_strategy.md` — 语音端点检测基础策略
+- `docs/voice_echo_interaction_solution.md` — 底部语音 Dock、开口即停倒计时、echo 生命周期与调试日志方案
 - 飞书文档：https://my.feishu.cn/docx/HWKKdFwxFopu8oxXN3sc4mLtnOc

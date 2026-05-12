@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:dio/dio.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/config/env_config.dart';
@@ -96,25 +97,40 @@ class DoubaoResponsesClient {
 
     await _ensureReachable();
 
+    final Map<String, dynamic> body = _buildRequestBody(
+      userText: userText,
+      previousResponseId: previousResponseId,
+      mode: mode,
+      summaryOnly: summaryOnly,
+      stream: false,
+    );
+    _doubaoResponsesDebugLog(
+      'create request stream=false mode=${mode.name} summaryOnly=$summaryOnly '
+      'previous=${previousResponseId ?? ''} user="${_clipLog(userText, max: 500)}"',
+    );
+    _doubaoResponsesDebugLog('create request body=${_jsonForLog(body)}');
+
     late final Response<Map<String, dynamic>> response;
     try {
       response = await _dio.post<Map<String, dynamic>>(
         '$_arkBaseUrl/responses',
         options: Options(headers: _headers(acceptStream: false)),
-        data: _buildRequestBody(
-          userText: userText,
-          previousResponseId: previousResponseId,
-          mode: mode,
-          summaryOnly: summaryOnly,
-          stream: false,
-        ),
+        data: body,
+      );
+      _doubaoResponsesDebugLog(
+        'create response status=${response.statusCode} data=${_jsonForLog(response.data)}',
       );
     } on DioException catch (e) {
+      _doubaoResponsesDebugLog(
+        'create dio error type=${e.type} status=${e.response?.statusCode} '
+        'message=${e.message} data=${_jsonForLog(e.response?.data)}',
+      );
       throw _buildDioException(e);
     }
 
     final Map<String, dynamic>? data = response.data;
     if (data == null) {
+      _doubaoResponsesDebugLog('create empty response data');
       throw DoubaoResponsesException(
         type: AssistantErrorType.emptyResponse,
         message: 'Responses API 返回空',
@@ -124,18 +140,25 @@ class DoubaoResponsesClient {
     final String id = _readResponseId(data);
     final String text = _extractOutputText(data).trim();
     if (id.isEmpty) {
+      _doubaoResponsesDebugLog(
+        'create missing response id data=${_jsonForLog(data)}',
+      );
       throw DoubaoResponsesException(
         type: AssistantErrorType.parseError,
         message: 'Responses API 返回缺少 response id',
       );
     }
     if (text.isEmpty) {
+      _doubaoResponsesDebugLog('create empty text data=${_jsonForLog(data)}');
       throw DoubaoResponsesException(
         type: AssistantErrorType.emptyResponse,
         message: 'Responses API 未返回可展示的文本',
       );
     }
 
+    _doubaoResponsesDebugLog(
+      'create parsed id=$id text="${_clipLog(text, max: 1200)}"',
+    );
     return DoubaoResponsesResult(id: id, text: text);
   }
 
@@ -188,6 +211,19 @@ class DoubaoResponsesClient {
     }
 
     final CancelToken token = cancelToken ?? CancelToken();
+    final Map<String, dynamic> body = _buildRequestBody(
+      userText: userText,
+      previousResponseId: previousResponseId,
+      mode: mode,
+      summaryOnly: summaryOnly,
+      stream: true,
+    );
+    _doubaoResponsesDebugLog(
+      'stream request mode=${mode.name} summaryOnly=$summaryOnly '
+      'previous=${previousResponseId ?? ''} user="${_clipLog(userText, max: 500)}"',
+    );
+    _doubaoResponsesDebugLog('stream request body=${_jsonForLog(body)}');
+
     late final Response<ResponseBody> response;
     try {
       response = await _dio.post<ResponseBody>(
@@ -197,19 +233,19 @@ class DoubaoResponsesClient {
           responseType: ResponseType.stream,
           headers: _headers(acceptStream: true),
         ),
-        data: _buildRequestBody(
-          userText: userText,
-          previousResponseId: previousResponseId,
-          mode: mode,
-          summaryOnly: summaryOnly,
-          stream: true,
-        ),
+        data: body,
       );
+      _doubaoResponsesDebugLog('stream response status=${response.statusCode}');
     } on DioException catch (e) {
+      _doubaoResponsesDebugLog(
+        'stream dio error type=${e.type} status=${e.response?.statusCode} '
+        'message=${e.message} data=${_jsonForLog(e.response?.data)}',
+      );
       controller.addError(_buildDioException(e));
       await controller.close();
       return;
     } catch (e) {
+      _doubaoResponsesDebugLog('stream request error=$e');
       controller.addError(e);
       await controller.close();
       return;
@@ -217,6 +253,7 @@ class DoubaoResponsesClient {
 
     final ResponseBody? respBody = response.data;
     if (respBody == null) {
+      _doubaoResponsesDebugLog('stream empty response body');
       controller.addError(
         DoubaoResponsesException(
           type: AssistantErrorType.emptyResponse,
@@ -252,11 +289,17 @@ class DoubaoResponsesClient {
       Map<String, dynamic>? json;
       try {
         json = jsonDecode(payload) as Map<String, dynamic>;
-      } catch (_) {
+      } catch (e) {
+        _doubaoResponsesDebugLog(
+          'stream json parse ignored event=${eventName ?? ''} error=$e payload=${_clipLog(payload)}',
+        );
         eventName = null;
         return;
       }
       final String type = eventName ?? _readString(json['type']);
+      _doubaoResponsesDebugLog(
+        'stream event type=$type payload=${_jsonForLog(json, max: 1200)}',
+      );
       final Iterable<PublicResponseEvent> events = _mapEventsFromJson(
         type: type,
         json: json,
@@ -301,6 +344,7 @@ class DoubaoResponsesClient {
 
       final String finalText = contentBuffer.toString().trim();
       if (finalText.isEmpty) {
+        _doubaoResponsesDebugLog('stream completed with empty text');
         throw DoubaoResponsesException(
           type: AssistantErrorType.emptyResponse,
           message: 'Responses API 未返回可展示的文本',
@@ -313,7 +357,12 @@ class DoubaoResponsesClient {
           text: finalText,
         ),
       );
+      _doubaoResponsesDebugLog(
+        'stream complete responseId=${latestResponseId ?? ''} '
+        'text="${_clipLog(finalText, max: 1600)}"',
+      );
     } catch (e) {
+      _doubaoResponsesDebugLog('stream error=$e');
       controller.addError(e);
     } finally {
       await controller.close();
@@ -421,6 +470,9 @@ class DoubaoResponsesClient {
         normalizedType == 'response.error') {
       final Map<String, dynamic>? error =
           json['error'] as Map<String, dynamic>?;
+      _doubaoResponsesDebugLog(
+        'stream server error type=$normalizedType error=${_jsonForLog(error)}',
+      );
       throw DoubaoResponsesException(
         type: AssistantErrorType.serverRejected,
         message: _readString(error?['message']).isEmpty
@@ -646,3 +698,22 @@ final Provider<DoubaoResponsesClient> doubaoResponsesClientProvider =
       final ArkNetworkProbe probe = ref.watch(arkNetworkProbeProvider);
       return DoubaoResponsesClient(env: env, probe: probe);
     });
+
+void _doubaoResponsesDebugLog(String message) {
+  if (!kDebugMode) return;
+  debugPrint('[DoubaoResponses] $message');
+}
+
+String _jsonForLog(Object? value, {int max = 1800}) {
+  try {
+    return _clipLog(jsonEncode(value), max: max);
+  } catch (_) {
+    return _clipLog(value, max: max);
+  }
+}
+
+String _clipLog(Object? value, {int max = 900}) {
+  final String text = value?.toString() ?? '';
+  if (text.length <= max) return text;
+  return '${text.substring(0, max)}...(${text.length} chars)';
+}

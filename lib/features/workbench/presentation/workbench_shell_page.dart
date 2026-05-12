@@ -218,7 +218,6 @@ class _AssistantDock extends ConsumerWidget {
           size: 68,
           countdownProgress: countdownProgress,
           audioLevel: ref.read(liveAudioLevelProvider),
-          listenWindowRemainingMs: assistantState.listenWindowRemainingMs,
         ),
       ),
     );

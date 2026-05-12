@@ -11,7 +11,7 @@ import '../presentation/widgets/answer_cards/answer_card_models.dart';
 /// listen 留给 W2 接 ASR；confirm 留给 W3 接日程操作。
 enum AssistantStage { idle, listen, think, answer, confirm, error }
 
-enum AssistantReplySurface { none, compactCard, drawer }
+enum AssistantReplySurface { none, drawer }
 
 enum AssistantSurfaceState {
   none,
@@ -20,6 +20,8 @@ enum AssistantSurfaceState {
   fullscreenAnswer,
   drawerOpen,
 }
+
+enum AssistantDrawerScrollTarget { none, latestMessage, pendingConfirm }
 
 enum AnswerCardKind {
   infoCard,
@@ -32,6 +34,96 @@ enum AnswerCardKind {
 }
 
 enum AssistantListeningMode { openMic, pressToTalk }
+
+enum AssistantVoiceEchoPhase { hidden, listening, finalText, processing, error }
+
+/// 当前语音回合的回显状态。
+///
+/// 这不是对话历史，也不进 API 历史，只服务当前 UI 回合：
+/// - listening：用户正在说，显示 partial
+/// - finalText：ASR final 到达，冻结用户原话
+/// - processing：助手开始处理，保留原话供用户确认
+/// - error：识别/端点异常
+class AssistantVoiceEchoState {
+  const AssistantVoiceEchoState({
+    required this.phase,
+    this.partialText = '',
+    this.finalText = '',
+    this.rawFinalText = '',
+    this.displayText = '',
+    this.cleaned = false,
+    this.remainingMs = 0,
+  });
+
+  const AssistantVoiceEchoState.hidden()
+      : this(phase: AssistantVoiceEchoPhase.hidden);
+
+  const AssistantVoiceEchoState.listening({
+    this.partialText = '',
+    this.displayText = '我在听，你可以直接说',
+    this.remainingMs = 0,
+  })  : phase = AssistantVoiceEchoPhase.listening,
+        finalText = '',
+        rawFinalText = '',
+        cleaned = false;
+
+  const AssistantVoiceEchoState.finalized({
+    required this.rawFinalText,
+    required this.finalText,
+    required this.displayText,
+    this.cleaned = false,
+    this.partialText = '',
+    this.remainingMs = 0,
+  }) : phase = AssistantVoiceEchoPhase.finalText;
+
+  const AssistantVoiceEchoState.processing({
+    required this.rawFinalText,
+    required this.finalText,
+    required this.displayText,
+    this.cleaned = false,
+    this.partialText = '',
+    this.remainingMs = 0,
+  }) : phase = AssistantVoiceEchoPhase.processing;
+
+  const AssistantVoiceEchoState.error({
+    required this.displayText,
+    this.remainingMs = 0,
+  })  : phase = AssistantVoiceEchoPhase.error,
+        partialText = '',
+        finalText = '',
+        rawFinalText = '',
+        cleaned = false;
+
+  final AssistantVoiceEchoPhase phase;
+  final String partialText;
+  final String finalText;
+  final String rawFinalText;
+  final String displayText;
+  final bool cleaned;
+  final int remainingMs;
+
+  bool get isVisible => phase != AssistantVoiceEchoPhase.hidden;
+
+  AssistantVoiceEchoState copyWith({
+    AssistantVoiceEchoPhase? phase,
+    String? partialText,
+    String? finalText,
+    String? rawFinalText,
+    String? displayText,
+    bool? cleaned,
+    int? remainingMs,
+  }) {
+    return AssistantVoiceEchoState(
+      phase: phase ?? this.phase,
+      partialText: partialText ?? this.partialText,
+      finalText: finalText ?? this.finalText,
+      rawFinalText: rawFinalText ?? this.rawFinalText,
+      displayText: displayText ?? this.displayText,
+      cleaned: cleaned ?? this.cleaned,
+      remainingMs: remainingMs ?? this.remainingMs,
+    );
+  }
+}
 
 /// 当前对话会话级的播报覆盖。
 /// - [followSettings]：默认。按全局 `TtsPlaybackMode` 决策。
@@ -206,6 +298,8 @@ class AssistantUiState {
     required this.messages,
     required this.replySurface,
     this.surfaceState = AssistantSurfaceState.none,
+    this.drawerOpenRequestId = 0,
+    this.drawerScrollTarget = AssistantDrawerScrollTarget.none,
     this.answerCardKind,
     this.answerCardText,
     this.answerCardResultCard,
@@ -214,9 +308,8 @@ class AssistantUiState {
     this.listenPartialText = '',
     this.listenError,
     this.ttsError,
-    this.compactReplyText,
-    this.compactReplyCard,
     this.listeningMode = AssistantListeningMode.openMic,
+    this.voiceEcho = const AssistantVoiceEchoState.hidden(),
     this.listenWindowRemainingMs = 0,
     this.followUpRemainingMs = 0,
     this.progress = const AssistantProgressState(),
@@ -241,6 +334,8 @@ class AssistantUiState {
   final List<AssistantMessage> messages;
   final AssistantReplySurface replySurface;
   final AssistantSurfaceState surfaceState;
+  final int drawerOpenRequestId;
+  final AssistantDrawerScrollTarget drawerScrollTarget;
   final AnswerCardKind? answerCardKind;
   final String? answerCardText;
   final AssistantResultCard? answerCardResultCard;
@@ -256,11 +351,11 @@ class AssistantUiState {
   /// TTS 播报错误。与 [listenError] 分离，避免 UX 文案混淆。
   final String? ttsError;
 
-  final String? compactReplyText;
-
-  final AssistantResultCard? compactReplyCard;
-
   final AssistantListeningMode listeningMode;
+
+  /// 当前语音回合的回显状态。
+  /// 不进历史，不进 API，只服务当前 UI。
+  final AssistantVoiceEchoState voiceEcho;
 
   final int listenWindowRemainingMs;
 
@@ -297,6 +392,8 @@ class AssistantUiState {
     List<AssistantMessage>? messages,
     AssistantReplySurface? replySurface,
     AssistantSurfaceState? surfaceState,
+    int? drawerOpenRequestId,
+    AssistantDrawerScrollTarget? drawerScrollTarget,
     AnswerCardKind? answerCardKind,
     String? answerCardText,
     AssistantResultCard? answerCardResultCard,
@@ -310,10 +407,9 @@ class AssistantUiState {
     bool clearListenError = false,
     String? ttsError,
     bool clearTtsError = false,
-    String? compactReplyText,
-    AssistantResultCard? compactReplyCard,
-    bool clearCompactReply = false,
     AssistantListeningMode? listeningMode,
+    AssistantVoiceEchoState? voiceEcho,
+    bool clearVoiceEcho = false,
     int? listenWindowRemainingMs,
     int? followUpRemainingMs,
     AssistantProgressState? progress,
@@ -337,6 +433,8 @@ class AssistantUiState {
       messages: messages ?? this.messages,
       replySurface: replySurface ?? this.replySurface,
       surfaceState: surfaceState ?? this.surfaceState,
+      drawerOpenRequestId: drawerOpenRequestId ?? this.drawerOpenRequestId,
+      drawerScrollTarget: drawerScrollTarget ?? this.drawerScrollTarget,
       answerCardKind: clearAnswerCard
           ? null
           : (answerCardKind ?? this.answerCardKind),
@@ -351,13 +449,10 @@ class AssistantUiState {
       listenPartialText: listenPartialText ?? this.listenPartialText,
       listenError: clearListenError ? null : (listenError ?? this.listenError),
       ttsError: clearTtsError ? null : (ttsError ?? this.ttsError),
-      compactReplyText: clearCompactReply
-          ? null
-          : (compactReplyText ?? this.compactReplyText),
-      compactReplyCard: clearCompactReply
-          ? null
-          : (compactReplyCard ?? this.compactReplyCard),
       listeningMode: listeningMode ?? this.listeningMode,
+      voiceEcho: clearVoiceEcho
+          ? const AssistantVoiceEchoState.hidden()
+          : (voiceEcho ?? this.voiceEcho),
       listenWindowRemainingMs:
           listenWindowRemainingMs ?? this.listenWindowRemainingMs,
       followUpRemainingMs: followUpRemainingMs ?? this.followUpRemainingMs,

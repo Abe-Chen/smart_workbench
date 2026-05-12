@@ -12,6 +12,7 @@ class AssistantCardRegistry {
         'exchange_rate': ExchangeRateCard.tryParse,
         'world_clock': WorldClockCard.tryParse,
         'poi_recommend': PoiRecommendCard.tryParse,
+        'news': NewsCard.tryParse,
       };
 
   static AssistantResultCard? parse({

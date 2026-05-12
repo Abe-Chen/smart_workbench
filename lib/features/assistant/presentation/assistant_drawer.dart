@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:math' as math;
 import 'dart:ui' as ui;
 
@@ -12,25 +13,27 @@ import '../application/assistant_controller.dart';
 import '../application/assistant_state.dart';
 import '../domain/assistant_message.dart';
 import '../domain/assistant_proactive_suggestion.dart';
-import '../domain/assistant_result_card.dart';
 import 'widgets/assistant_ball.dart';
 import 'widgets/assistant_run_status_card.dart';
 import 'widgets/completion_undo_listener.dart';
 import 'widgets/confirm_card.dart';
 import 'widgets/full_screen_answer_card.dart';
-import 'widgets/assistant_result_card_view.dart';
 import 'widgets/message_bubble.dart';
 import 'widgets/top_floating_banner.dart';
+import 'widgets/voice_echo_bar.dart';
 
 /// workbench_shell 底部导航栏总占用高度（圆角条 94 + SafeArea.minimum bottom 10）。
 /// 抽屉要在这之上停住，否则输入框会被导航栏盖住。
 const double _kBottomNavReserve = 104;
-const double _kDrawerEdgeGap = 12;
+const double _kDrawerEdgeGap = 8;
 const double _kDrawerPeekSize = 0.15;
-const double _kDrawerHalfSize = 0.6;
-const double _kDrawerFullSize = 0.9;
-const double _kDrawerMaxWidth = 980;
+const double _kDrawerHalfSize = 0.68;
+const double _kDrawerFullSize = 1.0;
+const double _kDrawerInitialSize = _kDrawerFullSize;
+const double _kDrawerMaxWidth = 1120;
 const double _kDrawerCompactHeight = 260;
+const double _kFullscreenVoiceDockReserve = 92;
+const double _kFullscreenVoiceDockMaxWidth = 680;
 
 class AssistantOverlay extends ConsumerWidget {
   const AssistantOverlay({super.key});
@@ -45,13 +48,9 @@ class AssistantOverlay extends ConsumerWidget {
         state.surfaceState == AssistantSurfaceState.fullscreenAnswer &&
         answerKind != null;
     // 顶部 banner 仅在抽屉关闭、非大卡时显示。
-    // listen 形态：用户唤醒说话中（surfaceState == topBannerListen + stage == listen）
-    // push 形态：主动建议触发（surfaceState == topBannerPush + proactiveSuggestion != null）
-    final bool showTopBannerListen =
-        !open &&
-        !showFullscreenAnswer &&
-        state.surfaceState == AssistantSurfaceState.topBannerListen &&
-        state.stage == AssistantStage.listen;
+    // **listen 形态已撤销**：用户唤醒说话由球周围的 VoiceEchoBar 担任
+    //   （音波动画/mode 区分/精确秒倒计时/紧贴球的视觉焦点）。
+    //   顶部 banner 留给"系统推送"场景（主动建议/未来的提醒预告）。
     final bool showTopBannerPush =
         !open &&
         !showFullscreenAnswer &&
@@ -62,6 +61,10 @@ class AssistantOverlay extends ConsumerWidget {
     final double topInset = viewPadding.top + _kDrawerEdgeGap;
     final double bottomInset =
         (keyboard > 0 ? keyboard : _kBottomNavReserve) + _kDrawerEdgeGap;
+    final bool showFullscreenVoiceDock =
+        showFullscreenAnswer && state.voiceEcho.isVisible;
+    final double fullscreenVoiceDockBottom =
+        (keyboard > 0 ? keyboard : _kBottomNavReserve) + 12;
 
     return Stack(
       children: <Widget>[
@@ -75,19 +78,19 @@ class AssistantOverlay extends ConsumerWidget {
           Positioned.fill(
             child: _FullscreenAnswerLayer(state: state, kind: answerKind),
           ),
+        if (showFullscreenVoiceDock)
+          Positioned(
+            left: 16,
+            right: 16,
+            bottom: fullscreenVoiceDockBottom,
+            child: _FullscreenVoiceEchoDock(state: state),
+          ),
         if (!open && !showFullscreenAnswer)
           Positioned(
             left: 0,
             right: 0,
             bottom: _kBottomNavReserve + 22,
             child: Center(child: _FloatingAssistantSurface(state: state)),
-          ),
-        if (showTopBannerListen)
-          Positioned(
-            top: 0,
-            left: 0,
-            right: 0,
-            child: _TopBannerListenLayer(state: state),
           ),
         if (showTopBannerPush)
           Positioned(
@@ -154,6 +157,9 @@ class _FullscreenAnswerLayer extends ConsumerWidget {
           ? state.pendingConfirm
           : null,
       reminder: kind == AnswerCardKind.reminder ? state.reminderCardData : null,
+      bottomReservedSpace: state.voiceEcho.isVisible
+          ? _kFullscreenVoiceDockReserve
+          : 0,
       onClose: canClose ? () => controller.hideAnswerCard() : null,
       onExpand: controller.expandAnswerCardToDrawer,
       onInteract: canResetTimer ? controller.extendAnswerCardDisplay : null,
@@ -181,25 +187,27 @@ class _FullscreenAnswerLayer extends ConsumerWidget {
   }
 }
 
-/// 顶部"在听..."浮窗。监听抽屉关闭时的 listen 状态，显示 ASR 识别中的实时文字。
-/// 内部用 Key(state.listenPartialText) 强制重建，确保动画跟随文字流式更新。
-class _TopBannerListenLayer extends ConsumerWidget {
-  const _TopBannerListenLayer({required this.state});
+class _FullscreenVoiceEchoDock extends ConsumerWidget {
+  const _FullscreenVoiceEchoDock({required this.state});
 
   final AssistantUiState state;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final AssistantController controller = ref.read(
-      assistantControllerProvider.notifier,
-    );
-    final String partial = state.listenPartialText.trim();
-    return TopFloatingBanner(
-      key: const ValueKey<String>('top_banner_listen'),
-      kind: TopBannerKind.listenPartial,
-      message: partial.isEmpty ? '你可以直接说需求' : partial,
-      remainingMs: state.listenWindowRemainingMs,
-      onClose: () => controller.cancelListening(),
+    return Center(
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(
+          maxWidth: _kFullscreenVoiceDockMaxWidth,
+        ),
+        child: VoiceEchoBar(
+          voiceEcho: state.voiceEcho,
+          onCancel: state.voiceEcho.phase == AssistantVoiceEchoPhase.listening
+              ? () => ref
+                    .read(assistantControllerProvider.notifier)
+                    .cancelListening()
+              : null,
+        ),
+      ),
     );
   }
 }
@@ -291,7 +299,7 @@ class _AssistantDrawerSheetState extends State<_AssistantDrawerSheet> {
               controller: _controller,
               expand: false,
               minChildSize: _kDrawerPeekSize,
-              initialChildSize: _kDrawerHalfSize,
+              initialChildSize: _kDrawerInitialSize,
               maxChildSize: _kDrawerFullSize,
               snap: true,
               snapSizes: const <double>[
@@ -570,6 +578,8 @@ class _AssistantDrawerBody extends ConsumerStatefulWidget {
 
 class _AssistantDrawerBodyState extends ConsumerState<_AssistantDrawerBody> {
   final TextEditingController _textCtrl = TextEditingController();
+  int _scrollRequestToken = 0;
+  int? _handledOpenRequestId;
 
   @override
   void dispose() {
@@ -577,16 +587,143 @@ class _AssistantDrawerBodyState extends ConsumerState<_AssistantDrawerBody> {
     super.dispose();
   }
 
-  void _scrollToBottom() {
-    if (!widget.scrollController.hasClients) return;
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!widget.scrollController.hasClients) return;
-      widget.scrollController.animateTo(
-        widget.scrollController.position.maxScrollExtent,
-        duration: const Duration(milliseconds: 220),
-        curve: Curves.easeOut,
+  bool _isNearBottom() {
+    if (!widget.scrollController.hasClients) {
+      return true;
+    }
+    final ScrollPosition position = widget.scrollController.position;
+    if (!position.hasContentDimensions) {
+      return true;
+    }
+    return position.maxScrollExtent - position.pixels <= 96;
+  }
+
+  int _visibleMessageCount(AssistantUiState? state) {
+    if (state == null) {
+      return 0;
+    }
+    return state.messages
+        .where((AssistantMessage message) => message.isVisibleInChat)
+        .length;
+  }
+
+  String _latestVisibleMessageFingerprint(AssistantUiState? state) {
+    if (state == null) {
+      return '';
+    }
+    final List<AssistantMessage> visibleMessages = state.messages
+        .where((AssistantMessage message) => message.isVisibleInChat)
+        .toList();
+    if (visibleMessages.isEmpty) {
+      return '';
+    }
+    final AssistantMessage latest = visibleMessages.last;
+    return '${visibleMessages.length}|'
+        '${latest.role.name}|'
+        '${latest.createdAt.microsecondsSinceEpoch}|'
+        '${latest.content.length}|'
+        '${latest.streaming}|'
+        '${latest.resultCard != null}';
+  }
+
+  void _scrollToDrawerTarget(
+    AssistantDrawerScrollTarget target, {
+    required bool waitForOpenAnimation,
+  }) {
+    if (target == AssistantDrawerScrollTarget.none) {
+      return;
+    }
+    _queueScrollToBottom(
+      force: true,
+      waitForOpenAnimation: waitForOpenAnimation,
+    );
+  }
+
+  void _queueScrollToBottom({
+    required bool force,
+    required bool waitForOpenAnimation,
+  }) {
+    final int token = ++_scrollRequestToken;
+    final List<Duration> delays = waitForOpenAnimation
+        ? const <Duration>[
+            Duration.zero,
+            Duration(milliseconds: 90),
+            Duration(milliseconds: 220),
+            Duration(milliseconds: 360),
+          ]
+        : const <Duration>[Duration.zero, Duration(milliseconds: 90)];
+
+    for (final Duration delay in delays) {
+      Future<void>.delayed(delay, () {
+        if (!mounted || token != _scrollRequestToken) {
+          return;
+        }
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (!mounted ||
+              token != _scrollRequestToken ||
+              !widget.scrollController.hasClients) {
+            return;
+          }
+          final ScrollPosition position = widget.scrollController.position;
+          if (!position.hasContentDimensions) {
+            return;
+          }
+          final double target = position.maxScrollExtent;
+          if ((position.pixels - target).abs() <= 1) {
+            return;
+          }
+          if (force) {
+            widget.scrollController.jumpTo(target);
+            return;
+          }
+          widget.scrollController.animateTo(
+            target,
+            duration: const Duration(milliseconds: 220),
+            curve: Curves.easeOut,
+          );
+        });
+      });
+    }
+  }
+
+  void _handleStateChanged(AssistantUiState? previous, AssistantUiState next) {
+    if (!next.drawerOpen) {
+      _handledOpenRequestId = null;
+      return;
+    }
+    if (previous?.drawerOpenRequestId != next.drawerOpenRequestId) {
+      _handledOpenRequestId = next.drawerOpenRequestId;
+      _scrollToDrawerTarget(
+        next.drawerScrollTarget,
+        waitForOpenAnimation: true,
       );
-    });
+      return;
+    }
+
+    final bool visibleCountChanged =
+        _visibleMessageCount(next) != _visibleMessageCount(previous);
+    final bool latestMessageChanged =
+        _latestVisibleMessageFingerprint(next) !=
+        _latestVisibleMessageFingerprint(previous);
+    final bool confirmAppeared =
+        previous?.pendingConfirm == null && next.pendingConfirm != null;
+
+    if (confirmAppeared) {
+      _queueScrollToBottom(force: false, waitForOpenAnimation: false);
+      return;
+    }
+    if ((visibleCountChanged || latestMessageChanged) && _isNearBottom()) {
+      _queueScrollToBottom(force: false, waitForOpenAnimation: false);
+    }
+  }
+
+  void _handleInitialOpenRequest(AssistantUiState state) {
+    if (!state.drawerOpen ||
+        _handledOpenRequestId == state.drawerOpenRequestId) {
+      return;
+    }
+    _handledOpenRequestId = state.drawerOpenRequestId;
+    _scrollToDrawerTarget(state.drawerScrollTarget, waitForOpenAnimation: true);
   }
 
   void _send() {
@@ -601,7 +738,8 @@ class _AssistantDrawerBodyState extends ConsumerState<_AssistantDrawerBody> {
   @override
   Widget build(BuildContext context) {
     final AssistantUiState state = ref.watch(assistantControllerProvider);
-    ref.listen(assistantControllerProvider, (_, _) => _scrollToBottom());
+    ref.listen(assistantControllerProvider, _handleStateChanged);
+    _handleInitialOpenRequest(state);
     final bool sending =
         state.stage == AssistantStage.think ||
         state.stage == AssistantStage.answer;
@@ -731,10 +869,8 @@ class _AssistantDrawerBodyState extends ConsumerState<_AssistantDrawerBody> {
                   ),
                 ),
               if (listening)
-                _ListenStrip(
-                  partialText: state.listenPartialText,
-                  listeningMode: state.listeningMode,
-                  remainingMs: state.listenWindowRemainingMs,
+                VoiceEchoBar(
+                  voiceEcho: state.voiceEcho,
                   onCancel: () => ref
                       .read(assistantControllerProvider.notifier)
                       .cancelListening(),
@@ -847,108 +983,6 @@ class _DrawerGrabber extends StatelessWidget {
         ),
       ),
     );
-  }
-}
-
-class _ListenStrip extends StatelessWidget {
-  const _ListenStrip({
-    required this.partialText,
-    required this.listeningMode,
-    required this.remainingMs,
-    required this.onCancel,
-  });
-
-  final String partialText;
-  final AssistantListeningMode listeningMode;
-  final int remainingMs;
-  final VoidCallback onCancel;
-
-  @override
-  Widget build(BuildContext context) {
-    final bool hasSpeech = partialText.trim().isNotEmpty;
-    final String hint = hasSpeech
-        ? partialText.trim()
-        : _defaultHintFor(listeningMode, remainingMs);
-    return Container(
-      decoration: BoxDecoration(
-        gradient: const LinearGradient(
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-          colors: <Color>[Color(0xFAFFFFFF), Color(0xF0EEF6FF)],
-        ),
-        borderRadius: BorderRadius.circular(24),
-        border: Border.all(color: Colors.white),
-        boxShadow: const <BoxShadow>[
-          BoxShadow(
-            color: Color(0x1F2F6BFF),
-            blurRadius: 24,
-            offset: Offset(0, 10),
-          ),
-        ],
-      ),
-      padding: const EdgeInsets.fromLTRB(12, 10, 8, 10),
-      child: Row(
-        children: <Widget>[
-          Container(
-            width: 40,
-            height: 40,
-            decoration: BoxDecoration(
-              gradient: const LinearGradient(
-                colors: <Color>[Color(0xFF28D8FF), Color(0xFF2F6BFF)],
-              ),
-              borderRadius: BorderRadius.circular(16),
-              boxShadow: const <BoxShadow>[
-                BoxShadow(
-                  color: Color(0x332F6BFF),
-                  blurRadius: 14,
-                  offset: Offset(0, 6),
-                ),
-              ],
-            ),
-            child: const Icon(Icons.mic_rounded, color: Colors.white, size: 21),
-          ),
-          const SizedBox(width: 10),
-          const _MiniVoiceWave(),
-          const SizedBox(width: 10),
-          Expanded(
-            child: Text(
-              hint,
-              maxLines: 2,
-              overflow: TextOverflow.ellipsis,
-              style: TextStyle(
-                color: hasSpeech
-                    ? const Color(0xFF1F2A44)
-                    : const Color(0xFF60708A),
-                fontSize: hasSpeech ? 14 : 13,
-                fontWeight: hasSpeech ? FontWeight.w800 : FontWeight.w700,
-                height: 1.35,
-              ),
-            ),
-          ),
-          if (listeningMode == AssistantListeningMode.openMic &&
-              remainingMs > 0)
-            Padding(
-              padding: const EdgeInsets.only(left: 8, right: 2),
-              child: _CountdownBadge(label: '${(remainingMs / 1000).ceil()}s'),
-            ),
-          IconButton(
-            tooltip: '取消',
-            icon: const Icon(Icons.close_rounded, size: 20),
-            color: const Color(0xFF7A8798),
-            onPressed: onCancel,
-          ),
-        ],
-      ),
-    );
-  }
-
-  String _defaultHintFor(AssistantListeningMode mode, int remainingMs) {
-    switch (mode) {
-      case AssistantListeningMode.openMic:
-        return remainingMs > 0 ? '我在听，你可以直接说' : '我在听...';
-      case AssistantListeningMode.pressToTalk:
-        return '我在听，松开手就发出去';
-    }
   }
 }
 
@@ -1109,33 +1143,6 @@ IconData _suggestionActionIcon(AssistantProactiveActionKind kind) {
   }
 }
 
-class _MiniVoiceWave extends StatelessWidget {
-  const _MiniVoiceWave();
-
-  @override
-  Widget build(BuildContext context) {
-    const List<double> heights = <double>[10, 18, 13, 22, 12];
-    return Row(
-      mainAxisSize: MainAxisSize.min,
-      children: <Widget>[
-        for (int i = 0; i < heights.length; i++) ...<Widget>[
-          Container(
-            width: 3,
-            height: heights[i],
-            decoration: BoxDecoration(
-              color: const Color(
-                0xFF2F6BFF,
-              ).withValues(alpha: i.isEven ? 0.72 : 0.42),
-              borderRadius: BorderRadius.circular(999),
-            ),
-          ),
-          if (i < heights.length - 1) const SizedBox(width: 3),
-        ],
-      ],
-    );
-  }
-}
-
 class _Header extends ConsumerWidget {
   const _Header({required this.stage});
   final AssistantStage stage;
@@ -1151,11 +1158,6 @@ class _Header extends ConsumerWidget {
       ),
     );
     final bool isMuted = sessionMute == AssistantSessionMute.muted;
-    final int remainingMs = ref.watch(
-      assistantControllerProvider.select(
-        (AssistantUiState s) => s.listenWindowRemainingMs,
-      ),
-    );
     final String statusLabel = hasPendingConfirm
         ? '等你确认一下'
         : _stageStatusLabel(stage);
@@ -1166,7 +1168,6 @@ class _Header extends ConsumerWidget {
           stage: stage,
           size: 44,
           audioLevel: ref.read(liveAudioLevelProvider),
-          listenWindowRemainingMs: remainingMs,
         ),
         const SizedBox(width: 10),
         Expanded(
@@ -1349,10 +1350,8 @@ class _FloatingAssistantSurface extends ConsumerWidget {
     if (state.stage == AssistantStage.listen) {
       return ConstrainedBox(
         constraints: const BoxConstraints(maxWidth: 520),
-        child: _ListenStrip(
-          partialText: state.listenPartialText,
-          listeningMode: state.listeningMode,
-          remainingMs: state.listenWindowRemainingMs,
+        child: VoiceEchoBar(
+          voiceEcho: state.voiceEcho,
           onCancel: () =>
               ref.read(assistantControllerProvider.notifier).cancelListening(),
         ),
@@ -1367,287 +1366,7 @@ class _FloatingAssistantSurface extends ConsumerWidget {
       );
     }
 
-    if (state.replySurface == AssistantReplySurface.compactCard &&
-        state.compactReplyText != null &&
-        state.compactReplyText!.trim().isNotEmpty) {
-      return _CompactReplyCard(
-        text: state.compactReplyText!,
-        resultCard: state.compactReplyCard,
-        followUpRemainingMs: state.followUpRemainingMs,
-      );
-    }
-
     return const SizedBox.shrink();
-  }
-}
-
-class _CompactReplyCard extends ConsumerWidget {
-  const _CompactReplyCard({
-    required this.text,
-    required this.followUpRemainingMs,
-    this.resultCard,
-  });
-
-  final String text;
-  final AssistantResultCard? resultCard;
-  final int followUpRemainingMs;
-
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final bool hideDuplicateSummary =
-        resultCard != null && text.trim() == resultCard!.summary.trim();
-    final double followUpProgress = followUpRemainingMs <= 0
-        ? 0
-        : (followUpRemainingMs / 5000).clamp(0, 1);
-    return ConstrainedBox(
-      constraints: const BoxConstraints(maxWidth: 520),
-      child: Container(
-        padding: const EdgeInsets.fromLTRB(16, 14, 12, 14),
-        decoration: BoxDecoration(
-          gradient: const LinearGradient(
-            begin: Alignment.topLeft,
-            end: Alignment.bottomRight,
-            colors: <Color>[Color(0xFFFFFFFF), Color(0xFFF3F8FF)],
-          ),
-          borderRadius: BorderRadius.circular(24),
-          border: Border.all(color: Colors.white),
-          boxShadow: const <BoxShadow>[
-            BoxShadow(
-              color: Color(0x1F0D47A1),
-              blurRadius: 28,
-              offset: Offset(0, 12),
-            ),
-          ],
-        ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          mainAxisSize: MainAxisSize.min,
-          children: <Widget>[
-            Row(
-              children: <Widget>[
-                Container(
-                  width: 34,
-                  height: 34,
-                  decoration: BoxDecoration(
-                    gradient: const LinearGradient(
-                      colors: <Color>[Color(0xFF71C8FF), Color(0xFF5665FF)],
-                    ),
-                    borderRadius: BorderRadius.circular(13),
-                    boxShadow: const <BoxShadow>[
-                      BoxShadow(
-                        color: Color(0x2F2F6BFF),
-                        blurRadius: 12,
-                        offset: Offset(0, 5),
-                      ),
-                    ],
-                  ),
-                  child: const Icon(
-                    Icons.auto_awesome_rounded,
-                    color: Colors.white,
-                    size: 17,
-                  ),
-                ),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: <Widget>[
-                      Text(
-                        '小治',
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: Theme.of(context).textTheme.titleMedium
-                            ?.copyWith(
-                              color: const Color(0xFF22324C),
-                              fontWeight: FontWeight.w900,
-                            ),
-                      ),
-                      Text(
-                        followUpRemainingMs > 0 ? '可以继续追问' : '结果已整理',
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                          color: const Color(0xFF7A8798),
-                          fontWeight: FontWeight.w700,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                _CardIconButton(
-                  tooltip: '再播一遍',
-                  icon: Icons.volume_up_rounded,
-                  onPressed: () => ref
-                      .read(assistantControllerProvider.notifier)
-                      .replayLatestAssistantReply(),
-                ),
-                _CardIconButton(
-                  tooltip: '展开抽屉',
-                  icon: Icons.open_in_full_rounded,
-                  onPressed: () => ref
-                      .read(assistantControllerProvider.notifier)
-                      .openDrawer(),
-                ),
-                _CardIconButton(
-                  tooltip: '关闭',
-                  icon: Icons.close_rounded,
-                  onPressed: () => ref
-                      .read(assistantControllerProvider.notifier)
-                      .hideCompactReply(),
-                ),
-              ],
-            ),
-            const SizedBox(height: 10),
-            if (resultCard != null) ...<Widget>[
-              AssistantResultCardView(card: resultCard!, compact: true),
-              if (!hideDuplicateSummary) const SizedBox(height: 10),
-            ],
-            if (!hideDuplicateSummary)
-              Text(
-                text,
-                maxLines: 4,
-                overflow: TextOverflow.ellipsis,
-                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                  color: const Color(0xFF1F2A44),
-                  height: 1.45,
-                  fontWeight: FontWeight.w700,
-                ),
-              ),
-            if (followUpRemainingMs > 0) ...<Widget>[
-              const SizedBox(height: 12),
-              Container(
-                padding: const EdgeInsets.fromLTRB(12, 9, 10, 9),
-                decoration: BoxDecoration(
-                  color: const Color(0xFFEAF2FF),
-                  borderRadius: BorderRadius.circular(16),
-                  border: Border.all(color: const Color(0xFFD3E0FF)),
-                ),
-                child: Row(
-                  children: <Widget>[
-                    const Icon(
-                      Icons.mic_none_rounded,
-                      size: 17,
-                      color: Color(0xFF2F6BFF),
-                    ),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: Text(
-                        '还需要什么？',
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                          color: const Color(0xFF60708A),
-                          fontWeight: FontWeight.w800,
-                        ),
-                      ),
-                    ),
-                    _CountdownRing(progress: followUpProgress),
-                    const SizedBox(width: 8),
-                    Text(
-                      '${(followUpRemainingMs / 1000).ceil()}s',
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: Theme.of(context).textTheme.labelMedium?.copyWith(
-                        color: const Color(0xFF60708A),
-                        fontWeight: FontWeight.w900,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ],
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _CardIconButton extends StatelessWidget {
-  const _CardIconButton({
-    required this.tooltip,
-    required this.icon,
-    required this.onPressed,
-  });
-
-  final String tooltip;
-  final IconData icon;
-  final VoidCallback onPressed;
-
-  @override
-  Widget build(BuildContext context) {
-    return IconButton(
-      tooltip: tooltip,
-      icon: Icon(icon, size: 19),
-      color: const Color(0xFF60708A),
-      padding: EdgeInsets.zero,
-      constraints: const BoxConstraints(minWidth: 34, minHeight: 34),
-      style: IconButton.styleFrom(
-        backgroundColor: const Color(0xFFF4F7FC),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-      ),
-      onPressed: onPressed,
-    );
-  }
-}
-
-class _CountdownBadge extends StatelessWidget {
-  const _CountdownBadge({required this.label});
-
-  final String label;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
-      decoration: BoxDecoration(
-        color: Colors.white.withValues(alpha: 0.92),
-        borderRadius: BorderRadius.circular(999),
-        border: Border.all(color: const Color(0xFFD3E0FF)),
-      ),
-      child: Text(
-        label,
-        maxLines: 1,
-        overflow: TextOverflow.ellipsis,
-        style: const TextStyle(
-          color: Color(0xFF2F6BFF),
-          fontSize: 11,
-          fontWeight: FontWeight.w800,
-        ),
-      ),
-    );
-  }
-}
-
-class _CountdownRing extends StatelessWidget {
-  const _CountdownRing({required this.progress});
-
-  final double progress;
-
-  @override
-  Widget build(BuildContext context) {
-    return SizedBox(
-      width: 20,
-      height: 20,
-      child: Stack(
-        fit: StackFit.expand,
-        children: <Widget>[
-          CircularProgressIndicator(
-            value: progress,
-            strokeWidth: 2.4,
-            backgroundColor: const Color(0xFFDCE7FF),
-            valueColor: const AlwaysStoppedAnimation<Color>(Color(0xFF2F6BFF)),
-          ),
-          const Center(
-            child: Icon(
-              Icons.mic_none_rounded,
-              size: 10,
-              color: Color(0xFF2F6BFF),
-            ),
-          ),
-        ],
-      ),
-    );
   }
 }
 
